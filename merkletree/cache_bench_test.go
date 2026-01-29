@@ -245,3 +245,52 @@ func BenchmarkCacheContention(b *testing.B) {
 		})
 	}
 }
+
+func TestTreeSpecificTopN(t *testing.T) {
+	// Глобальный конфиг с TopN = 5
+	cfg := DefaultConfig()
+	cfg.TopN = 5
+	mgr := NewUniversalManager(cfg)
+
+	// Дерево 1: использует глобальный TopN = 5
+	tree1, _ := CreateTree[*Account](mgr, "tree1")
+	
+	// Дерево 2: переопределяет TopN = 10
+	cfg2 := DefaultConfig()
+	cfg2.TopN = 10
+	tree2, _ := CreateTreeWithConfig[*Account](mgr, "tree2", cfg2)
+	
+	// Дерево 3: отключает TopN
+	cfg3 := DefaultConfig()
+	cfg3.TopN = 0
+	tree3, _ := CreateTreeWithConfig[*Account](mgr, "tree3", cfg3)
+
+	// Заполняем деревья
+	for i := uint64(1); i <= 20; i++ {
+		tree1.Insert(NewAccount(i, StatusUser))
+		tree2.Insert(NewAccount(i, StatusUser))
+		tree3.Insert(NewAccount(i, StatusUser))
+	}
+
+	// Проверяем tree1 (TopN = 5)
+	topMin1 := tree1.GetTopMin(100) // запрашиваем больше чем есть
+	if len(topMin1) != 5 {
+		t.Errorf("tree1: ожидалось 5, получено %d", len(topMin1))
+	}
+
+	// Проверяем tree2 (TopN = 10)
+	topMin2 := tree2.GetTopMin(100)
+	if len(topMin2) != 10 {
+		t.Errorf("tree2: ожидалось 10, получено %d", len(topMin2))
+	}
+
+	// Проверяем tree3 (TopN отключен)
+	if tree3.IsTopNEnabled() {
+		t.Error("tree3: TopN должен быть отключен")
+	}
+	topMin3 := tree3.GetTopMin(5)
+	if topMin3 != nil {
+		t.Error("tree3: должен вернуть nil")
+	}
+
+}

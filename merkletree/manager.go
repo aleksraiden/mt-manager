@@ -20,6 +20,21 @@ type UniversalManager struct {
 	snapshotMgr     *SnapshotManager
 }
 
+// TreeOptions - опции для создания конкретного дерева
+type TreeOptions struct {
+	// TopN - количество топ элементов для этого дерева (0 = отключено)
+	// Если не указано, используется значение из Config
+	TopN *int
+	
+	// CacheSize - размер кеша для этого дерева (0 = отключено)
+	// Если не указано, используется значение из Config
+	CacheSize *int
+	
+	// CacheShards - количество шардов кеша для этого дерева
+	// Если не указано, используется значение из Config
+	CacheShards *uint
+}
+
 // NewUniversalManager создает новый универсальный менеджер деревьев
 func NewUniversalManager(cfg *Config) *UniversalManager {
 	if cfg == nil {
@@ -72,6 +87,7 @@ func CreateTreeWithConfig[T Hashable](m *UniversalManager, name string, cfg *Con
 
 	return tree, nil
 }
+
 
 // GetTree возвращает дерево по имени с нужным типом
 func GetTree[T Hashable](m *UniversalManager, name string) (*Tree[T], bool) {
