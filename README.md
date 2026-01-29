@@ -55,8 +55,8 @@ type Account struct {
     Nonce   uint64
 }
 
-func (a *Account) Key() byte {[^8]
-    var key byte[^8]
+func (a *Account) Key() []byte {
+    key := make([]byte, 8)
     binary.BigEndian.PutUint64(key[:], a.ID)
     return key
 }
