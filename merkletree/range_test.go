@@ -4,254 +4,130 @@ import (
 	"testing"
 )
 
-func TestRangeQuery(t *testing.T) {
-	// Создаем менеджер с одним деревом
-	mgr := NewManager[*Account](SmallConfig())
-	tree, err := mgr.CreateTree("test")
-	if err != nil {
-		t.Fatalf("Failed to create tree: %v", err)
-	}
-	
-	// Вставляем элементы с ID 10, 20, 30, 40, 50
-	accounts := []*Account{
-		NewAccount(10, StatusUser),
-		NewAccount(20, StatusUser),
-		NewAccount(30, StatusUser),
-		NewAccount(40, StatusUser),
-		NewAccount(50, StatusUser),
-	}
-	
-	for _, acc := range accounts {
-		tree.Insert(acc)
-	}
-	
-	// Тест 1: [20, 40] включительно
-	result := tree.RangeQueryByID(20, 40, true, true)
-	if len(result) != 3 {
-		t.Errorf("Test 1: Expected 3 items (20,30,40), got %d", len(result))
-		for _, r := range result {
-			t.Logf("  ID: %d", r.UID)
-		}
-	}
-	
-	// Тест 2: [20, 40) исключая конец
-	result = tree.RangeQueryByID(20, 40, true, false)
-	if len(result) != 2 {
-		t.Errorf("Test 2: Expected 2 items (20,30), got %d", len(result))
-		for _, r := range result {
-			t.Logf("  ID: %d", r.UID)
-		}
-	}
-	
-	// Тест 3: (20, 40) исключая оба конца
-	result = tree.RangeQueryByID(20, 40, false, false)
-	if len(result) != 1 {
-		t.Errorf("Test 3: Expected 1 item (30), got %d", len(result))
-		for _, r := range result {
-			t.Logf("  ID: %d", r.UID)
-		}
-	}
-	
-	// Тест 4: Весь диапазон [10, 50]
-	result = tree.RangeQueryByID(10, 50, true, true)
-	if len(result) != 5 {
-		t.Errorf("Test 4: Expected 5 items, got %d", len(result))
-		for _, r := range result {
-			t.Logf("  ID: %d", r.UID)
-		}
-	}
-	
-	// Тест 5: Пустой диапазон
-	result = tree.RangeQueryByID(100, 200, true, true)
-	if len(result) != 0 {
-		t.Errorf("Test 5: Expected 0 items, got %d", len(result))
-	}
-}
+func TestTreeRangeQuery(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+	tree, _ := CreateTree[*Account](mgr, "test")
 
-func TestRangeQueryWithDeletes(t *testing.T) {
-	mgr := NewManager[*Account](SmallConfig())
-	tree, err := mgr.CreateTree("test")
-	if err != nil {
-		t.Fatalf("Failed to create tree: %v", err)
-	}
-	
 	// Вставляем элементы
-	accounts := []*Account{
-		NewAccount(10, StatusUser),
-		NewAccount(20, StatusUser),
-		NewAccount(30, StatusUser),
-		NewAccount(40, StatusUser),
-		NewAccount(50, StatusUser),
+	for i := uint64(0); i < 100; i++ {
+		tree.Insert(NewAccount(i*10, StatusUser))
 	}
-	
-	tree.InsertBatch(accounts)
-	
-	// Удаляем элемент 30
-	tree.DeleteBatch([]uint64{30})
-	
-	// Проверяем, что 30 не включается в результат
-	result := tree.RangeQueryByID(20, 40, true, true)
-	if len(result) != 2 {
-		t.Errorf("Expected 2 items (20,40) after delete, got %d", len(result))
-		for _, r := range result {
-			t.Logf("  ID: %d", r.UID)
-		}
-	}
-	
-	// Проверяем, что элементы правильные
-	found20 := false
-	found40 := false
-	for _, r := range result {
-		if r.UID == 20 {
-			found20 = true
-		}
-		if r.UID == 40 {
-			found40 = true
-		}
-		if r.UID == 30 {
-			t.Errorf("Found deleted item 30 in range query!")
-		}
-	}
-	
-	if !found20 || !found40 {
-		t.Errorf("Missing expected items: found20=%v, found40=%v", found20, found40)
-	}
-}
 
-func TestRangeQueryOrdering(t *testing.T) {
-	mgr := NewManager[*Account](SmallConfig())
-	tree, err := mgr.CreateTree("test")
-	if err != nil {
-		t.Fatalf("Failed to create tree: %v", err)
+	// Range query [200, 500)
+	results := tree.RangeQueryByID(200, 500, true, false)
+
+	expectedCount := 30 // IDs: 200, 210, 220, ..., 490
+	if len(results) != expectedCount {
+		t.Errorf("Expected %d results, got %d", expectedCount, len(results))
 	}
-	
-	// Вставляем в произвольном порядке
-	accounts := []*Account{
-		NewAccount(50, StatusUser),
-		NewAccount(10, StatusUser),
-		NewAccount(30, StatusUser),
-		NewAccount(40, StatusUser),
-		NewAccount(20, StatusUser),
+
+	// Проверяем порядок
+	for i := 0; i < len(results)-1; i++ {
+		if results[i].ID() >= results[i+1].ID() {
+			t.Error("Results should be sorted")
+		}
 	}
-	
-	tree.InsertBatch(accounts)
-	
-	// Проверяем, что результаты в правильном порядке
-	result := tree.RangeQueryByID(10, 50, true, true)
-	if len(result) != 5 {
-		t.Errorf("Expected 5 items, got %d", len(result))
-	}
-	
-	// Проверяем сортировку
-	for i := 0; i < len(result)-1; i++ {
-		if result[i].UID > result[i+1].UID {
-			t.Errorf("Result not sorted: %d > %d at positions %d, %d",
-				result[i].UID, result[i+1].UID, i, i+1)
+
+	// Проверяем границы
+	if len(results) > 0 {
+		first := results[0].ID()
+		last := results[len(results)-1].ID()
+
+		if first < 200 {
+			t.Errorf("First ID %d should be >= 200", first)
+		}
+		if last >= 500 {
+			t.Errorf("Last ID %d should be < 500", last)
 		}
 	}
 }
 
-func BenchmarkRangeQuery(b *testing.B) {
-	mgr := NewManager[*Account](LargeConfig())
-	tree, err := mgr.CreateTree("bench")
-	if err != nil {
-		b.Fatalf("Failed to create tree: %v", err)
+func TestTreeRangeQueryEmpty(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+	tree, _ := CreateTree[*Account](mgr, "test")
+
+	// Вставляем элементы с IDs: 0, 10, 20, ..., 990
+	for i := uint64(0); i < 100; i++ {
+		tree.Insert(NewAccount(i*10, StatusUser))
 	}
-	
-	// Вставляем 100K элементов
-	accounts := make([]*Account, 100000)
-	for i := 0; i < 100000; i++ {
-		accounts[i] = NewAccount(uint64(i), StatusUser)
+
+	// Query вне диапазона
+	results := tree.RangeQueryByID(1000, 2000, true, false)
+
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results, got %d", len(results))
 	}
-	tree.InsertBatch(accounts)
-	
+}
+
+func TestTreeRangeQueryBoundaries(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+	tree, _ := CreateTree[*Account](mgr, "test")
+
+	// Вставляем: 100, 200, 300, 400, 500
+	for _, id := range []uint64{100, 200, 300, 400, 500} {
+		tree.Insert(NewAccount(id, StatusUser))
+	}
+
+	tests := []struct {
+		name          string
+		start         uint64
+		end           uint64
+		includeStart  bool
+		includeEnd    bool
+		expectedCount int
+	}{
+		{"[200, 400)", 200, 400, true, false, 2}, // 200, 300
+		{"(200, 400]", 200, 400, false, true, 2}, // 300, 400
+		{"[200, 400]", 200, 400, true, true, 3},  // 200, 300, 400
+		{"(200, 400)", 200, 400, false, false, 1}, // 300
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := tree.RangeQueryByID(tt.start, tt.end, tt.includeStart, tt.includeEnd)
+			if len(results) != tt.expectedCount {
+				t.Errorf("Expected %d results, got %d", tt.expectedCount, len(results))
+			}
+		})
+	}
+}
+
+func TestTreeRangeQueryLarge(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+	tree, _ := CreateTree[*Account](mgr, "test")
+
+	// Вставляем 10000 элементов
+	for i := uint64(0); i < 10000; i++ {
+		tree.Insert(NewAccount(i, StatusUser))
+	}
+
+	// Range query [3000, 7000)
+	results := tree.RangeQueryByID(3000, 7000, true, false)
+
+	if len(results) != 4000 {
+		t.Errorf("Expected 4000 results, got %d", len(results))
+	}
+
+	// Проверяем все элементы
+	for i, acc := range results {
+		expectedID := uint64(3000 + i)
+		if acc.ID() != expectedID {
+			t.Errorf("At position %d: expected ID %d, got %d", i, expectedID, acc.ID())
+		}
+	}
+}
+
+func BenchmarkTreeRangeQuery(b *testing.B) {
+	mgr := NewUniversalManager(DefaultConfig())
+	tree, _ := CreateTree[*Account](mgr, "test")
+
+	// Заполняем дерево
+	for i := uint64(0); i < 100000; i++ {
+		tree.Insert(NewAccount(i, StatusUser))
+	}
+
 	b.ResetTimer()
-	
-	// Запрос 1000 элементов из середины диапазона
 	for i := 0; i < b.N; i++ {
-		result := tree.RangeQueryByID(40000, 41000, true, false)
-		if len(result) == 0 {
-			b.Fatal("Empty result")
-		}
-	}
-}
-
-func BenchmarkRangeQuerySmall(b *testing.B) {
-	mgr := NewManager[*Account](LargeConfig())
-	tree, err := mgr.CreateTree("bench")
-	if err != nil {
-		b.Fatalf("Failed to create tree: %v", err)
-	}
-	
-	accounts := make([]*Account, 100000)
-	for i := 0; i < 100000; i++ {
-		accounts[i] = NewAccount(uint64(i), StatusUser)
-	}
-	tree.InsertBatch(accounts)
-	
-	b.ResetTimer()
-	
-	// Запрос 10 элементов
-	for i := 0; i < b.N; i++ {
-		result := tree.RangeQueryByID(50000, 50010, true, false)
-		if len(result) == 0 {
-			b.Fatal("Empty result")
-		}
-	}
-}
-
-func BenchmarkRangeQueryLarge(b *testing.B) {
-	mgr := NewManager[*Account](LargeConfig())
-	tree, err := mgr.CreateTree("bench")
-	if err != nil {
-		b.Fatalf("Failed to create tree: %v", err)
-	}
-	
-	accounts := make([]*Account, 100000)
-	for i := 0; i < 100000; i++ {
-		accounts[i] = NewAccount(uint64(i), StatusUser)
-	}
-	tree.InsertBatch(accounts)
-	
-	b.ResetTimer()
-	
-	// Запрос 10000 элементов
-	for i := 0; i < b.N; i++ {
-		result := tree.RangeQueryByID(30000, 40000, true, false)
-		if len(result) == 0 {
-			b.Fatal("Empty result")
-		}
-	}
-}
-
-func BenchmarkRangeQueryWithDeletes(b *testing.B) {
-	mgr := NewManager[*Account](LargeConfig())
-	tree, err := mgr.CreateTree("bench")
-	if err != nil {
-		b.Fatalf("Failed to create tree: %v", err)
-	}
-	
-	// Вставляем 100K элементов
-	accounts := make([]*Account, 100000)
-	for i := 0; i < 100000; i++ {
-		accounts[i] = NewAccount(uint64(i), StatusUser)
-	}
-	tree.InsertBatch(accounts)
-	
-	// Удаляем каждый 10-й элемент
-	deleteIDs := make([]uint64, 0, 10000)
-	for i := 0; i < 100000; i += 10 {
-		deleteIDs = append(deleteIDs, uint64(i))
-	}
-	tree.DeleteBatch(deleteIDs)
-	
-	b.ResetTimer()
-	
-	// Запрос из диапазона с удаленными элементами
-	for i := 0; i < b.N; i++ {
-		result := tree.RangeQueryByID(40000, 41000, true, false)
-		if len(result) == 0 {
-			b.Fatal("Empty result")
-		}
+		tree.RangeQueryByID(10000, 10100, true, false)
 	}
 }

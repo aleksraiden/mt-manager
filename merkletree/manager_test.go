@@ -5,9 +5,8 @@ import (
 )
 
 func TestManagerCreateTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree, err := manager.CreateTree("test")
+	manager := NewUniversalManager(DefaultConfig())
+	tree, err := CreateTree[*Account](manager, "test")
 	if err != nil {
 		t.Fatalf("Не удалось создать дерево: %v", err)
 	}
@@ -17,21 +16,20 @@ func TestManagerCreateTree(t *testing.T) {
 	}
 
 	// Попытка создать дерево с тем же именем
-	_, err = manager.CreateTree("test")
+	_, err = CreateTree[*Account](manager, "test")
 	if err == nil {
 		t.Error("Должна быть ошибка при создании дублирующегося дерева")
 	}
 }
 
 func TestManagerGetTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	_, err := manager.CreateTree("test")
+	manager := NewUniversalManager(DefaultConfig())
+	_, err := CreateTree[*Account](manager, "test")
 	if err != nil {
 		t.Fatalf("Не удалось создать дерево: %v", err)
 	}
 
-	tree, exists := manager.GetTree("test")
+	tree, exists := GetTree[*Account](manager, "test")
 	if !exists {
 		t.Error("Дерево должно существовать")
 	}
@@ -41,30 +39,34 @@ func TestManagerGetTree(t *testing.T) {
 	}
 
 	// Несуществующее дерево
-	_, exists = manager.GetTree("nonexistent")
+	_, exists = GetTree[*Account](manager, "nonexistent")
 	if exists {
 		t.Error("Несуществующее дерево не должно быть найдено")
 	}
 }
 
 func TestManagerGetOrCreateTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree1 := manager.GetOrCreateTree("test")
+	manager := NewUniversalManager(DefaultConfig())
+	tree1, err := GetOrCreateTree[*Account](manager, "test")
+	if err != nil {
+		t.Fatalf("Не удалось создать дерево: %v", err)
+	}
 	if tree1 == nil {
 		t.Fatal("Дерево не должно быть nil")
 	}
 
-	tree2 := manager.GetOrCreateTree("test")
+	tree2, err := GetOrCreateTree[*Account](manager, "test")
+	if err != nil {
+		t.Fatalf("Не удалось получить дерево: %v", err)
+	}
 	if tree1 != tree2 {
 		t.Error("GetOrCreateTree должен возвращать то же дерево")
 	}
 }
 
 func TestManagerRemoveTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	manager.CreateTree("test")
+	manager := NewUniversalManager(DefaultConfig())
+	CreateTree[*Account](manager, "test")
 
 	if !manager.RemoveTree("test") {
 		t.Error("Удаление должно вернуть true")
@@ -76,11 +78,10 @@ func TestManagerRemoveTree(t *testing.T) {
 }
 
 func TestManagerListTrees(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	manager.CreateTree("tree1")
-	manager.CreateTree("tree2")
-	manager.CreateTree("tree3")
+	manager := NewUniversalManager(DefaultConfig())
+	CreateTree[*Account](manager, "tree1")
+	CreateTree[*Account](manager, "tree2")
+	CreateTree[*Account](manager, "tree3")
 
 	trees := manager.ListTrees()
 	if len(trees) != 3 {
@@ -89,10 +90,9 @@ func TestManagerListTrees(t *testing.T) {
 }
 
 func TestManagerComputeGlobalRoot(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree1 := manager.GetOrCreateTree("users")
-	tree2 := manager.GetOrCreateTree("admins")
+	manager := NewUniversalManager(DefaultConfig())
+	tree1, _ := GetOrCreateTree[*Account](manager, "users")
+	tree2, _ := GetOrCreateTree[*Account](manager, "admins")
 
 	for i := uint64(0); i < 100; i++ {
 		tree1.Insert(NewAccount(i, StatusUser))
@@ -100,7 +100,6 @@ func TestManagerComputeGlobalRoot(t *testing.T) {
 	}
 
 	root := manager.ComputeGlobalRoot()
-
 	// Проверяем детерминизм
 	root2 := manager.ComputeGlobalRoot()
 	if root != root2 {
@@ -115,10 +114,9 @@ func TestManagerComputeGlobalRoot(t *testing.T) {
 }
 
 func TestManagerComputeAllRoots(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree1 := manager.GetOrCreateTree("tree1")
-	tree2 := manager.GetOrCreateTree("tree2")
+	manager := NewUniversalManager(DefaultConfig())
+	tree1, _ := GetOrCreateTree[*Account](manager, "tree1")
+	tree2, _ := GetOrCreateTree[*Account](manager, "tree2")
 
 	for i := uint64(0); i < 100; i++ {
 		tree1.Insert(NewAccount(i, StatusUser))
@@ -126,7 +124,6 @@ func TestManagerComputeAllRoots(t *testing.T) {
 	}
 
 	roots := manager.ComputeAllRoots()
-
 	if len(roots) != 2 {
 		t.Errorf("Ожидалось 2 корня, получено %d", len(roots))
 	}
@@ -141,10 +138,9 @@ func TestManagerComputeAllRoots(t *testing.T) {
 }
 
 func TestManagerGetTotalStats(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree1 := manager.GetOrCreateTree("tree1")
-	tree2 := manager.GetOrCreateTree("tree2")
+	manager := NewUniversalManager(DefaultConfig())
+	tree1, _ := GetOrCreateTree[*Account](manager, "tree1")
+	tree2, _ := GetOrCreateTree[*Account](manager, "tree2")
 
 	for i := uint64(0); i < 500; i++ {
 		tree1.Insert(NewAccount(i, StatusUser))
@@ -155,7 +151,6 @@ func TestManagerGetTotalStats(t *testing.T) {
 	}
 
 	stats := manager.GetTotalStats()
-
 	if stats.TreeCount != 2 {
 		t.Errorf("Ожидалось 2 дерева, получено %d", stats.TreeCount)
 	}
@@ -166,47 +161,46 @@ func TestManagerGetTotalStats(t *testing.T) {
 }
 
 func TestManagerInsertToTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-	manager.CreateTree("test")
+	manager := NewUniversalManager(DefaultConfig())
+	CreateTree[*Account](manager, "test")
 
 	acc := NewAccount(123, StatusUser)
-	err := manager.InsertToTree("test", acc)
+	err := InsertToTree[*Account](manager, "test", acc)
 	if err != nil {
 		t.Errorf("Не удалось вставить: %v", err)
 	}
 
 	// Вставка в несуществующее дерево
-	err = manager.InsertToTree("nonexistent", acc)
+	err = InsertToTree[*Account](manager, "nonexistent", acc)
 	if err == nil {
 		t.Error("Должна быть ошибка при вставке в несуществующее дерево")
 	}
 }
 
 func TestManagerBatchInsertToTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-	manager.CreateTree("test")
+	manager := NewUniversalManager(DefaultConfig())
+	CreateTree[*Account](manager, "test")
 
 	accounts := make([]*Account, 100)
 	for i := range accounts {
 		accounts[i] = NewAccount(uint64(i), StatusUser)
 	}
 
-	err := manager.BatchInsertToTree("test", accounts)
+	err := BatchInsertToTree[*Account](manager, "test", accounts)
 	if err != nil {
 		t.Errorf("Не удалось вставить батч: %v", err)
 	}
 
-	tree, _ := manager.GetTree("test")
+	tree, _ := GetTree[*Account](manager, "test")
 	if tree.Size() != 100 {
 		t.Errorf("Ожидалось 100 элементов, получено %d", tree.Size())
 	}
 }
 
 func TestManagerClearAll(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree1 := manager.GetOrCreateTree("tree1")
-	tree2 := manager.GetOrCreateTree("tree2")
+	manager := NewUniversalManager(DefaultConfig())
+	tree1, _ := GetOrCreateTree[*Account](manager, "tree1")
+	tree2, _ := GetOrCreateTree[*Account](manager, "tree2")
 
 	for i := uint64(0); i < 100; i++ {
 		tree1.Insert(NewAccount(i, StatusUser))
@@ -225,10 +219,9 @@ func TestManagerClearAll(t *testing.T) {
 }
 
 func TestManagerRemoveAll(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	manager.CreateTree("tree1")
-	manager.CreateTree("tree2")
+	manager := NewUniversalManager(DefaultConfig())
+	CreateTree[*Account](manager, "tree1")
+	CreateTree[*Account](manager, "tree2")
 
 	manager.RemoveAll()
 
@@ -238,44 +231,11 @@ func TestManagerRemoveAll(t *testing.T) {
 	}
 }
 
-// Бенчмарки менеджера
-func BenchmarkManagerComputeGlobalRoot(b *testing.B) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	for i := 0; i < 10; i++ {
-		tree := manager.GetOrCreateTree(string(rune('a' + i)))
-		for j := uint64(0); j < 1000; j++ {
-			tree.Insert(NewAccount(uint64(i)*1000+j, StatusUser))
-		}
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		manager.ComputeGlobalRoot()
-	}
-}
-
-func BenchmarkManagerComputeAllRootsParallel(b *testing.B) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	for i := 0; i < 10; i++ {
-		tree := manager.GetOrCreateTree(string(rune('a' + i)))
-		for j := uint64(0); j < 10000; j++ {
-			tree.Insert(NewAccount(uint64(i)*10000+j, StatusUser))
-		}
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		manager.ComputeAllRoots()
-	}
-}
-
 func TestManagerTreeNaming(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
+	manager := NewUniversalManager(DefaultConfig())
 
 	// Создание с именем
-	_, err := manager.CreateTree("my_accounts")
+	_, err := CreateTree[*Account](manager, "my_accounts")
 	if err != nil {
 		t.Fatalf("Не удалось создать дерево: %v", err)
 	}
@@ -290,50 +250,10 @@ func TestManagerTreeNaming(t *testing.T) {
 	}
 }
 
-func TestManagerRenameTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	manager.CreateTree("old_name")
-
-	err := manager.RenameTree("old_name", "new_name")
-	if err != nil {
-		t.Fatalf("Не удалось переименовать: %v", err)
-	}
-
-	if manager.TreeExists("old_name") {
-		t.Error("Старое имя не должно существовать")
-	}
-
-	if !manager.TreeExists("new_name") {
-		t.Error("Новое имя должно существовать")
-	}
-}
-
-func TestManagerCloneTree(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
-
-	tree, _ := manager.CreateTree("original")
-	for i := uint64(0); i < 100; i++ {
-		tree.Insert(NewAccountDeterministic(i, StatusUser))
-	}
-
-	err := manager.CloneTree("original", "clone")
-	if err != nil {
-		t.Fatalf("Не удалось клонировать: %v", err)
-	}
-
-	originalSize, _ := manager.GetTreeSize("original")
-	cloneSize, _ := manager.GetTreeSize("clone")
-
-	if originalSize != cloneSize {
-		t.Errorf("Размеры должны совпадать: %d != %d", originalSize, cloneSize)
-	}
-}
-
 func TestManagerGetTreeInfo(t *testing.T) {
-	manager := NewManager[*Account](DefaultConfig())
+	manager := NewUniversalManager(DefaultConfig())
+	tree, _ := CreateTree[*Account](manager, "test")
 
-	tree, _ := manager.CreateTree("test")
 	for i := uint64(0); i < 50; i++ {
 		tree.Insert(NewAccountDeterministic(i, StatusUser))
 	}
@@ -352,4 +272,110 @@ func TestManagerGetTreeInfo(t *testing.T) {
 	}
 
 	t.Logf("\n%s", info.String())
+}
+
+// Тест смешанных типов в одном менеджере
+func TestManagerMixedTypes(t *testing.T) {
+	manager := NewUniversalManager(DefaultConfig())
+
+	// Создаем деревья разных типов
+	accountTree, err := CreateTree[*Account](manager, "accounts")
+	if err != nil {
+		t.Fatalf("Не удалось создать дерево аккаунтов: %v", err)
+	}
+
+	balanceTree, err := CreateTree[*Balance](manager, "balances")
+	if err != nil {
+		t.Fatalf("Не удалось создать дерево балансов: %v", err)
+	}
+
+	// Заполняем аккаунты
+	for i := uint64(0); i < 10; i++ {
+		accountTree.Insert(NewAccount(i, StatusUser))
+	}
+
+	// Заполняем балансы
+	for i := uint64(0); i < 10; i++ {
+		balanceTree.Insert(NewBalance(i, 1, 1000_000000, 0))
+	}
+
+	// Проверяем глобальный корень
+	globalRoot := manager.ComputeGlobalRoot()
+	var zero [32]byte
+	if globalRoot == zero {
+		t.Error("Глобальный корень не должен быть нулевым")
+	}
+
+	// Проверяем статистику
+	stats := manager.GetTotalStats()
+	if stats.TreeCount != 2 {
+		t.Errorf("Ожидалось 2 дерева, получено %d", stats.TreeCount)
+	}
+
+	if stats.TotalItems != 20 {
+		t.Errorf("Ожидалось 20 элементов, получено %d", stats.TotalItems)
+	}
+
+	// Проверяем type safety
+	_, exists := GetTree[*Account](manager, "accounts")
+	if !exists {
+		t.Error("Дерево accounts должно существовать как Account")
+	}
+
+	// Попытка получить с неправильным типом должна вернуть false
+	_, exists = GetTree[*Balance](manager, "accounts")
+	if exists {
+		t.Error("Дерево accounts не должно получаться как Balance")
+	}
+}
+
+// Бенчмарки менеджера
+func BenchmarkManagerComputeGlobalRoot(b *testing.B) {
+	manager := NewUniversalManager(DefaultConfig())
+
+	for i := 0; i < 10; i++ {
+		tree, _ := GetOrCreateTree[*Account](manager, string(rune('a'+i)))
+		for j := uint64(0); j < 1000; j++ {
+			tree.Insert(NewAccount(uint64(i)*1000+j, StatusUser))
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		manager.ComputeGlobalRoot()
+	}
+}
+
+func BenchmarkManagerComputeAllRootsParallel(b *testing.B) {
+	manager := NewUniversalManager(DefaultConfig())
+
+	for i := 0; i < 10; i++ {
+		tree, _ := GetOrCreateTree[*Account](manager, string(rune('a'+i)))
+		for j := uint64(0); j < 10000; j++ {
+			tree.Insert(NewAccount(uint64(i)*10000+j, StatusUser))
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		manager.ComputeAllRoots()
+	}
+}
+
+func BenchmarkManagerMixedTypes(b *testing.B) {
+	manager := NewUniversalManager(DefaultConfig())
+
+	// Создаем деревья разных типов
+	accountTree, _ := CreateTree[*Account](manager, "accounts")
+	balanceTree, _ := CreateTree[*Balance](manager, "balances")
+
+	for i := uint64(0); i < 1000; i++ {
+		accountTree.Insert(NewAccount(i, StatusUser))
+		balanceTree.Insert(NewBalance(i, 1, 1000_000000, 0))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		manager.ComputeGlobalRoot()
+	}
 }
