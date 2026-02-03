@@ -93,7 +93,11 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 	return t
 }
 
+//Одиночная вставка с блокировкой 
 func (t *Tree[T]) Insert(item T) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	
 	t.items.Store(item.ID(), item)
 	t.itemCount.Add(1)
 	t.cache.put(item.ID(), item)
@@ -133,6 +137,11 @@ func (t *Tree[T]) InsertBatch(items []T) {
 
 // insertBatchSimple для маленьких батчей (с глобальной блокировкой)
 func (t *Tree[T]) insertBatchSimple(items []T) {
+	// Берем ОДНУ глобальную блокировку на весь батч
+	// TODO: можно оптимизировать, вынеся из-под блокировки часть операций, но будет два обхода цикла 
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	
 	for _, item := range items {
 		t.items.Store(item.ID(), item)
 		t.cache.put(item.ID(), item)
@@ -140,15 +149,16 @@ func (t *Tree[T]) insertBatchSimple(items []T) {
 		// Обновляем TopN
 		t.topMinCache.TryInsert(item)
 		t.topMaxCache.TryInsert(item)
-	}
-	t.itemCount.Add(uint64(len(items)))
-
-	// Берем ОДНУ глобальную блокировку на весь батч
-	t.mu.Lock()
-	for _, item := range items {
+		
 		t.insertNodeUnderGlobalLock(t.root, item, 0)
 	}
-	t.mu.Unlock()
+	
+	t.itemCount.Add(uint64(len(items)))
+
+	//for _, item := range items {
+	//	t.insertNodeUnderGlobalLock(t.root, item, 0)
+	//}
+	//t.mu.Unlock()
 
 	t.rootCacheValid.Store(false)
 }
@@ -506,10 +516,12 @@ func (t *Tree[T]) ComputeRoot() [32]byte {
             return val.([32]byte)
         }
     }
-
-    // Вычисляем новый root (дорого, делаем редко)
-    newRoot := t.computeNodeHash(t.root, 0, true)
-
+	
+	t.mu.RLock()
+		// Вычисляем новый root (дорого, делаем редко)
+		newRoot := t.computeNodeHash(t.root, 0, true)
+	t.mu.RUnlock()
+	
     // CAS-loop: пытаемся установить, если dirty не изменился
     for attempts := 0; attempts < 16; attempts++ { // лимит попыток, чтобы не loop forever
         currentDirty := t.dirtyNodes.Load()
@@ -522,20 +534,24 @@ func (t *Tree[T]) ComputeRoot() [32]byte {
         if t.dirtyNodes.CompareAndSwap(currentDirty, 0) {
             return newRoot
         }
-
-        // Dirty изменился → кто-то вставил/удалил → пересчитываем
-        newRoot = t.computeNodeHash(t.root, 0, true)
+		
+		t.mu.RLock()
+			// Dirty изменился → кто-то вставил/удалил → пересчитываем
+			newRoot = t.computeNodeHash(t.root, 0, true)
+		t.mu.RUnlock()
     }
 
     // Редкий fallback: если CAS не удался много раз (очень высокая contention)
     // — просто берём lock и делаем финальную запись
     t.mu.Lock()
     defer t.mu.Unlock()
-    newRoot = t.computeNodeHash(t.root, 0, true)
+    
+	newRoot = t.computeNodeHash(t.root, 0, true)
     t.cachedRoot.Store(newRoot)
     t.rootCacheValid.Store(true)
     t.dirtyNodes.Store(0)
-    return newRoot
+    
+	return newRoot
 }
 
 // computeNodeHash - ЕДИНЫЙ метод с автоматическим параллелизмом
