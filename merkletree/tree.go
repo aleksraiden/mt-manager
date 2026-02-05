@@ -37,6 +37,9 @@ type Tree[T Hashable] struct {
 	useAppLookup	bool		//флаг ипользования (автоматически) лукап-таблицы 
 	appLookup	  	sync.Map	//специализированный лукап 
 	
+	useUidLookup	bool		//флаг ипользования (автоматически) лукап-таблицы 
+	uidLookup	  	sync.Map	//специализированный лукап 
+	
 	name            string  // Имя дерева (для снапшотов)
 
 	// Lazy hashing (компактно)
@@ -1255,7 +1258,7 @@ func (t *Tree[T]) IterTopMax() *TopNIterator[T] {
 }
 
 //Работа с лукап-таблицей 
-func (t *Tree[T]) LookupAdd(key [16]byte, val uint64) {
+func (t *Tree[T]) AppLookupAdd(key [16]byte, val uint64) {
 	if t.useAppLookup == false {
 		return
 	}
@@ -1263,7 +1266,7 @@ func (t *Tree[T]) LookupAdd(key [16]byte, val uint64) {
 	t.appLookup.Store(key, val)
 }
 
-func (t *Tree[T]) LookupGet(key [16]byte) (uint64, bool) {
+func (t *Tree[T]) AppLookupGet(key [16]byte) (uint64, bool) {
 	if t.useAppLookup == false {
 		return 0, false
 	}
@@ -1277,7 +1280,7 @@ func (t *Tree[T]) LookupGet(key [16]byte) (uint64, bool) {
 	return val.(uint64), ok
 }
 
-func (t *Tree[T]) LookupDel(key [16]byte) {
+func (t *Tree[T]) AppLookupDel(key [16]byte) {
 	if t.useAppLookup == false {
 		return
 	}
@@ -1288,7 +1291,7 @@ func (t *Tree[T]) LookupDel(key [16]byte) {
 	t.appLookup.Delete(key)
 }
 
-func (t *Tree[T]) LookupClear() {
+func (t *Tree[T]) AppLookupClear() {
 	if t.useAppLookup == false {
 		return
 	}
@@ -1297,4 +1300,62 @@ func (t *Tree[T]) LookupClear() {
 	defer t.mu.Unlock()
 	
 	t.appLookup.Clear()
+}
+
+func (t *Tree[T]) GetAppLookupMap() {
+	return *t.appLookup
+}
+
+//Работа с лукап-таблицей для Uid маппинга 
+func (t *Tree[T]) UidLookupAdd(key [16]byte, val uint64) {
+	if t.useUidLookup == false {
+		return
+	}
+	
+	t.uidLookup.Store(key, val)
+}
+
+func (t *Tree[T]) UidLookupGet(key [16]byte) (uint64, bool) {
+	if t.useUidLookup == false {
+		return 0, false
+	}
+	
+	val, ok := t.uidLookup.Load(key)
+	
+	if val == nil {
+		return uint64(0), false
+	}
+	
+	return val.(uint64), ok
+}
+
+func (t *Tree[T]) UidLookupDel(key [16]byte) {
+	if t.useUidLookup == false {
+		return
+	}
+	
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	
+	t.uidLookup.Delete(key)
+}
+
+func (t *Tree[T]) UidLookupClear() {
+	if t.useUidLookup == false {
+		return
+	}
+	
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	
+	t.uidLookup.Clear()
+}
+
+func (t *Tree[T]) GetUidLookupMap() {
+	return *t.uidLookup
+}
+
+//Получим ссылку на внутренний мютекс дерева
+func (t *Tree[T]) GetTreeMu() {
+	return *t.mu
 }
