@@ -33,6 +33,9 @@ type TreeOptions struct {
 	// CacheShards - количество шардов кеша для этого дерева
 	// Если не указано, используется значение из Config
 	CacheShards *uint
+	
+	//Специализированный лукап для аппликейшина
+	AppLoockup  *uint
 }
 
 // NewUniversalManager создает новый универсальный менеджер деревьев

@@ -22,7 +22,8 @@ type Config struct {
 	MaxDepth    int  // Максимальная глубина дерева
 	CacheSize   int  // Размер кеша
 	CacheShards uint // Количество шардов для кеша (2^n)
-	TopN        int // Для хранения топ-левел кеша 
+	TopN        int // Для хранения топ-левел кеша
+	AppLoockup	uint //глубина апликейшин лукап-таблицы, по дефолту 0
 }
 
 // DefaultConfig возвращает конфигурацию по умолчанию
@@ -32,6 +33,7 @@ func DefaultConfig() *Config {
 		CacheSize:   100000,
 		CacheShards: 8,
 		TopN:        0,
+		AppLoockup:	 0,
 	}
 }
 

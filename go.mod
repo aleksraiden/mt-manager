@@ -1,4 +1,4 @@
-module github.com/aleksraiden/mt-manager
+module github.com/aleksraiden/mt-manager 
 
 go 1.25
 

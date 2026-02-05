@@ -34,6 +34,8 @@ type Tree[T Hashable] struct {
 	topMinCache   *TopNCache[T]  // Минимальные элементы (ascending)
 	topMaxCache   *TopNCache[T]  // Максимальные элементы (descending)
 	
+	appLookup		map[[16]byte]uint64 //специализированный лукап 
+	
 	name            string  // Имя дерева (для снапшотов)
 
 	// Lazy hashing (компактно)
@@ -86,6 +88,10 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		// Инициализация TopN кешей
 		topMinCache: NewTopNCache[T](cfg.TopN, true),   // ascending = min-heap
 		topMaxCache: NewTopNCache[T](cfg.TopN, false),  // descending = max-heap
+	}
+	
+	if cfg.AppLoockup != 0 {
+		t.appLookup = make(map[[16]byte]uint64, cfg.AppLoockup)
 	}
 	
 	t.cachedRoot.Store([32]byte{}) // zero value
@@ -361,7 +367,7 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 			if k == idx {
 				child := node.Children[i]
 				child.Value = item
-				// ✅ НЕ вычисляем хеш! Только помечаем как грязный
+				// помечаем как грязный
 				child.dirty.Store(true)
 				node.dirty.Store(true)
 				t.dirtyNodes.Add(1)
@@ -373,7 +379,7 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 		child := t.arena.alloc()
 		child.IsLeaf = true
 		child.Value = item
-		// ✅ НЕ вычисляем хеш! Только помечаем как грязный
+		//помечаем как грязный
 		child.dirty.Store(true)
 		node.Keys = append(node.Keys, idx)
 		node.Children = append(node.Children, child)
@@ -491,24 +497,6 @@ func (t *Tree[T]) Get(id uint64) (T, bool) {
 }
 
 // ComputeRoot вычисляет корневой хеш (с автоматическим выбором стратегии)
-/**
-func (t *Tree[T]) ComputeRoot() [32]byte {
-	// Проверяем кеш корня
-	if t.rootCacheValid.Load() {
-		return t.cachedRoot
-	}
-
-	// Автоматический выбор: параллельно или последовательно
-	root := t.computeNodeHash(t.root, 0, true) // true = разрешить параллелизм
-
-	t.cachedRoot = root
-	t.rootCacheValid.Store(true)
-	t.dirtyNodes.Store(0)
-	t.computeCount.Add(1)
-
-	return root
-}**/
-
 func (t *Tree[T]) ComputeRoot() [32]byte {
     // Быстрое чтение (lock-free)
     if t.rootCacheValid.Load() {
@@ -622,7 +610,7 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 		}
 	}
 	
-	// ✅ НОВАЯ ЛОГИКА: Batch-хеширование листьев
+	// Batch-хеширование листьев
 	var leafHashes map[*Node[T]][32]byte
 	if useBatchLeafHashing {
 		// Собираем все листья на следующем уровне
