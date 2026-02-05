@@ -1282,6 +1282,9 @@ func (t *Tree[T]) LookupDel(key [16]byte) {
 		return
 	}
 	
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	
 	t.appLookup.Delete(key)
 }
 
@@ -1289,6 +1292,9 @@ func (t *Tree[T]) LookupClear() {
 	if t.useAppLookup == false {
 		return
 	}
+	
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	
 	t.appLookup.Clear()
 }
