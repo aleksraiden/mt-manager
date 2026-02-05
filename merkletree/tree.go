@@ -34,7 +34,8 @@ type Tree[T Hashable] struct {
 	topMinCache   *TopNCache[T]  // Минимальные элементы (ascending)
 	topMaxCache   *TopNCache[T]  // Максимальные элементы (descending)
 	
-	appLookup		map[[16]byte]uint64 //специализированный лукап 
+	useAppLookup	bool		//флаг ипользования (автоматически) лукап-таблицы 
+	appLookup	  	sync.Map	//специализированный лукап 
 	
 	name            string  // Имя дерева (для снапшотов)
 
@@ -88,10 +89,8 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		// Инициализация TopN кешей
 		topMinCache: NewTopNCache[T](cfg.TopN, true),   // ascending = min-heap
 		topMaxCache: NewTopNCache[T](cfg.TopN, false),  // descending = max-heap
-	}
-	
-	if cfg.AppLoockup != 0 {
-		t.appLookup = make(map[[16]byte]uint64, cfg.AppLoockup)
+		
+		useAppLookup: cfg.UseAppLoockup,
 	}
 	
 	t.cachedRoot.Store([32]byte{}) // zero value
@@ -1253,4 +1252,39 @@ func (t *Tree[T]) IterTopMin() *TopNIterator[T] {
 // Итератор обходит элементы в порядке убывания ключа
 func (t *Tree[T]) IterTopMax() *TopNIterator[T] {
 	return t.topMaxCache.GetIteratorMax()
+}
+
+//Работа с лукап-таблицей 
+func (t *Tree[T]) LookupAdd(key [16]byte, val uint64) {
+	if t.useAppLookup == false {
+		return
+	}
+	
+	t.appLookup.Store(key, val)
+}
+
+func (t *Tree[T]) LookupGet(key [16]byte) (uint64, bool) {
+	if t.useAppLookup == false {
+		return 0, false
+	}
+	
+	val, ok := t.appLookup.Load(key)
+	
+	return val, ok
+}
+
+func (t *Tree[T]) LookupDel(key [16]byte) {
+	if t.useAppLookup == false {
+		return
+	}
+	
+	t.appLookup.Delete(key)
+}
+
+func (t *Tree[T]) LookupClear() {
+	if t.useAppLookup == false {
+		return
+	}
+	
+	t.appLookup.Clear()
 }
