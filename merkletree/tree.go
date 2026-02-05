@@ -1270,7 +1270,7 @@ func (t *Tree[T]) LookupGet(key [16]byte) (uint64, bool) {
 	
 	val, ok := t.appLookup.Load(key)
 	
-	return uint64(val), ok
+	return val.(uint64), ok
 }
 
 func (t *Tree[T]) LookupDel(key [16]byte) {
