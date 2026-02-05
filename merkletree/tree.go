@@ -1351,8 +1351,8 @@ func (t *Tree[T]) UidLookupClear() {
 	t.uidLookup.Clear()
 }
 
-func (t *Tree[T]) GetUidLookupMap() {
-	return *t.uidLookup
+func (t *Tree[T]) GetUidLookupMap() *sync.Map {
+	return &t.uidLookup
 }
 
 //Получим ссылку на внутренний мютекс дерева
