@@ -93,7 +93,8 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		topMinCache: NewTopNCache[T](cfg.TopN, true),   // ascending = min-heap
 		topMaxCache: NewTopNCache[T](cfg.TopN, false),  // descending = max-heap
 		
-		useAppLookup: cfg.UseAppLoockup,
+		useAppLookup: 	cfg.UseAppLoockup,
+		useUidLoockup: 	cfg.UseUidLoockup,
 	}
 	
 	t.cachedRoot.Store([32]byte{}) // zero value
