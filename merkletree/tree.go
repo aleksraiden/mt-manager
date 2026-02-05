@@ -1302,8 +1302,8 @@ func (t *Tree[T]) AppLookupClear() {
 	t.appLookup.Clear()
 }
 
-func (t *Tree[T]) GetAppLookupMap() {
-	return *t.appLookup
+func (t *Tree[T]) GetAppLookupMap() *sync.Map {
+	return &t.appLookup
 }
 
 //Работа с лукап-таблицей для Uid маппинга 
@@ -1356,6 +1356,6 @@ func (t *Tree[T]) GetUidLookupMap() {
 }
 
 //Получим ссылку на внутренний мютекс дерева
-func (t *Tree[T]) GetTreeMu() {
-	return *t.mu
+func (t *Tree[T]) GetTreeMu() *sync.RWMutex {
+	return &t.mu
 }
