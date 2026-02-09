@@ -34,12 +34,6 @@ type Tree[T Hashable] struct {
 	topMinCache   *TopNCache[T]  // Минимальные элементы (ascending)
 	topMaxCache   *TopNCache[T]  // Максимальные элементы (descending)
 	
-	useAppLookup	bool		//флаг ипользования (автоматически) лукап-таблицы 
-	appLookup	  	sync.Map	//специализированный лукап 
-	
-	useUidLookup	bool		//флаг ипользования (автоматически) лукап-таблицы 
-	uidLookup	  	sync.Map	//специализированный лукап 
-	
 	name            string  // Имя дерева (для снапшотов)
 
 	// Lazy hashing (компактно)
@@ -92,9 +86,6 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		// Инициализация TopN кешей
 		topMinCache: NewTopNCache[T](cfg.TopN, true),   // ascending = min-heap
 		topMaxCache: NewTopNCache[T](cfg.TopN, false),  // descending = max-heap
-		
-		useAppLookup: 	cfg.UseAppLookup,
-		useUidLookup: 	cfg.UseUidLookup,
 	}
 	
 	t.cachedRoot.Store([32]byte{}) // zero value
@@ -1256,104 +1247,6 @@ func (t *Tree[T]) IterTopMin() *TopNIterator[T] {
 // Итератор обходит элементы в порядке убывания ключа
 func (t *Tree[T]) IterTopMax() *TopNIterator[T] {
 	return t.topMaxCache.GetIteratorMax()
-}
-
-//Работа с лукап-таблицей 
-func (t *Tree[T]) AppLookupAdd(key [16]byte, val uint64) {
-	if t.useAppLookup == false {
-		return
-	}
-	
-	t.appLookup.Store(key, val)
-}
-
-func (t *Tree[T]) AppLookupGet(key [16]byte) (uint64, bool) {
-	if t.useAppLookup == false {
-		return 0, false
-	}
-	
-	val, ok := t.appLookup.Load(key)
-	
-	if val == nil {
-		return uint64(0), false
-	}
-	
-	return val.(uint64), ok
-}
-
-func (t *Tree[T]) AppLookupDel(key [16]byte) {
-	if t.useAppLookup == false {
-		return
-	}
-	
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	t.appLookup.Delete(key)
-}
-
-func (t *Tree[T]) AppLookupClear() {
-	if t.useAppLookup == false {
-		return
-	}
-	
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	t.appLookup.Clear()
-}
-
-func (t *Tree[T]) GetAppLookupMap() *sync.Map {
-	return &t.appLookup
-}
-
-//Работа с лукап-таблицей для Uid маппинга 
-func (t *Tree[T]) UidLookupAdd(key [16]byte, val uint64) {
-	if t.useUidLookup == false {
-		return
-	}
-	
-	t.uidLookup.Store(key, val)
-}
-
-func (t *Tree[T]) UidLookupGet(key [16]byte) (uint64, bool) {
-	if t.useUidLookup == false {
-		return 0, false
-	}
-	
-	val, ok := t.uidLookup.Load(key)
-	
-	if val == nil {
-		return uint64(0), false
-	}
-	
-	return val.(uint64), ok
-}
-
-func (t *Tree[T]) UidLookupDel(key [16]byte) {
-	if t.useUidLookup == false {
-		return
-	}
-	
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	t.uidLookup.Delete(key)
-}
-
-func (t *Tree[T]) UidLookupClear() {
-	if t.useUidLookup == false {
-		return
-	}
-	
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	t.uidLookup.Clear()
-}
-
-func (t *Tree[T]) GetUidLookupMap() *sync.Map {
-	return &t.uidLookup
 }
 
 //Получим ссылку на внутренний мютекс дерева

@@ -23,8 +23,6 @@ type Config struct {
 	CacheSize   int  // Размер кеша
 	CacheShards uint // Количество шардов для кеша (2^n)
 	TopN        int // Для хранения топ-левел кеша
-	UseAppLookup	bool //специализированный лукап
-	UseUidLookup	bool 
 }
 
 // DefaultConfig возвращает конфигурацию по умолчанию
@@ -34,8 +32,6 @@ func DefaultConfig() *Config {
 		CacheSize:   100000,
 		CacheShards: 8,
 		TopN:        0,
-		UseAppLookup:	false,
-		UseUidLookup:	false,
 	}
 }
 
