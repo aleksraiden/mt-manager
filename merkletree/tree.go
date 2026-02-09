@@ -1269,7 +1269,7 @@ func (t *Tree[T]) GetMaxKey() (uint64, bool) {
 // IsTopNEnabled проверяет, активен ли TopN кеш
 func (t *Tree[T]) IsTopNEnabled() bool {
 	if t.topNCache != nil {
-		return t.topMinCache.IsEnabled()
+		return t.topNCache.IsEnabled()
 	}
 	
 	return false
