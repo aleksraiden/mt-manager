@@ -1214,7 +1214,7 @@ func (t *Tree[T]) GetMin() (T, bool) {
 		return t.topNCache.GetFirst()
 	}
 	
-	return nil, false
+	//return nil, false
 }
 
 // GetMax возвращает максимальный элемент O(1)
@@ -1223,7 +1223,7 @@ func (t *Tree[T]) GetMax() (T, bool) {
 		return t.topNCache.GetFirst()
 	}
 	
-	return nil, false
+	//return nil, false
 }
 
 // GetTopMin возвращает top-N минимальных элементов O(1)
@@ -1233,7 +1233,7 @@ func (t *Tree[T]) GetTopMin(n int) []T {
 		return t.topNCache.GetTop(n)
 	}
 	
-	return nil
+	//return nil
 }
 
 // GetTopMax возвращает top-N максимальных элементов O(1)
@@ -1243,7 +1243,7 @@ func (t *Tree[T]) GetTopMax(n int) []T {
 		return t.topNCache.GetTop(n)
 	}
 	
-	return nil
+	//return nil
 }
 
 // GetMinKey возвращает минимальный ключ O(1)
