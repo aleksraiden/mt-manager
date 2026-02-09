@@ -1232,8 +1232,7 @@ func (t *Tree[T]) GetMax() (T, bool) {
 // Элементы отсортированы по возрастанию ключа
 func (t *Tree[T]) GetTopMin(n int) []T {
 	if t.topNCache == nil {
-		var zero T
-		return zero
+		return []T{}
 	}
 	
 	return t.topNCache.GetTop(n)
@@ -1243,8 +1242,7 @@ func (t *Tree[T]) GetTopMin(n int) []T {
 // Элементы отсортированы по убыванию ключа
 func (t *Tree[T]) GetTopMax(n int) []T {
 	if t.topNCache == nil {
-		var zero T
-		return zero
+		return []T{}
 	}
 	
 	return t.topNCache.GetTop(n)
