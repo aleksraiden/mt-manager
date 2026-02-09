@@ -1210,40 +1210,44 @@ func (t *Tree[T]) countDeletedNodes(node *Node[T]) int {
 
 // GetMin возвращает минимальный элемент O(1)
 func (t *Tree[T]) GetMin() (T, bool) {
-	if t.topNCache != nil {
-		return t.topNCache.GetFirst()
+	if t.topNCache == nil {
+		var zero T
+		return zero, false
 	}
 	
-	//return nil, false
+	return t.topNCache.GetFirst()
 }
 
 // GetMax возвращает максимальный элемент O(1)
 func (t *Tree[T]) GetMax() (T, bool) {
-	if t.topNCache != nil {
-		return t.topNCache.GetFirst()
+	if t.topNCache == nil {
+		var zero T
+		return zero, false
 	}
 	
-	//return nil, false
+	return t.topNCache.GetFirst()
 }
 
 // GetTopMin возвращает top-N минимальных элементов O(1)
 // Элементы отсортированы по возрастанию ключа
 func (t *Tree[T]) GetTopMin(n int) []T {
-	if t.topNCache != nil {
-		return t.topNCache.GetTop(n)
+	if t.topNCache == nil {
+		var zero T
+		return zero
 	}
 	
-	//return nil
+	return t.topNCache.GetTop(n)
 }
 
 // GetTopMax возвращает top-N максимальных элементов O(1)
 // Элементы отсортированы по убыванию ключа
 func (t *Tree[T]) GetTopMax(n int) []T {
-	if t.topNCache != nil {
-		return t.topNCache.GetTop(n)
+	if t.topNCache == nil {
+		var zero T
+		return zero
 	}
 	
-	//return nil
+	return t.topNCache.GetTop(n)
 }
 
 // GetMinKey возвращает минимальный ключ O(1)
