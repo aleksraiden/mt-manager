@@ -88,13 +88,13 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		//topMinCache: NewTopNCache[T](cfg.TopN, true),   // ascending = min-heap
 		//topMaxCache: NewTopNCache[T](cfg.TopN, false),  // descending = max-heap
 		
-		useTopNMax:	cfg.UseTopNMax,
-		useTopNMin:	cfg.UseTopNMin,
+		//useTopNMax:	cfg.UseTopNMax,
+		//useTopNMin:	cfg.UseTopNMin,
 	}
 	
-	if t.useTopNMax == true {
+	if cfg.UseTopNMax == true {
 		t.topNCache = NewTopNCache[T](cfg.TopN, false)  // descending = max-heap
-	} else if t.useTopNMin == true {
+	} else if cfg.UseTopNMin == true {
 		t.topNCache = NewTopNCache[T](cfg.TopN, true)	// ascending = min-heap
 	}
 	
@@ -1214,7 +1214,7 @@ func (t *Tree[T]) GetMin() (T, bool) {
 		return t.topNCache.GetFirst()
 	}
 	
-	return nil
+	return nil, false
 }
 
 // GetMax возвращает максимальный элемент O(1)
@@ -1223,7 +1223,7 @@ func (t *Tree[T]) GetMax() (T, bool) {
 		return t.topNCache.GetFirst()
 	}
 	
-	return nil
+	return nil, false
 }
 
 // GetTopMin возвращает top-N минимальных элементов O(1)
