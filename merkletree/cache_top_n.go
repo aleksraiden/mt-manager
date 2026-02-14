@@ -57,6 +57,11 @@ func (tc *TopNCache[T]) TryInsert(item T) bool {
 		return false
 	}
 	
+	//Do NOT add 0-ID item into cache 
+	if item.ID() == 0 {
+		return false 
+	}
+	
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	
@@ -106,6 +111,11 @@ func (tc *TopNCache[T]) Remove(item T) bool {
 	
 	count := len(tc.items)
 	id := item.ID()
+	
+	//Do NOT deleting 0-ID element 
+	if id == 0 {
+		return false
+	}
 	
 	// Линейный поиск элемента (O(n), но n <= capacity обычно мало)
 	for i := 0; i < count; i++ {

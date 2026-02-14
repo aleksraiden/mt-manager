@@ -250,6 +250,7 @@ func TestTreeSpecificTopN(t *testing.T) {
 	// Глобальный конфиг с TopN = 5
 	cfg := DefaultConfig()
 	cfg.TopN = 5
+	cfg.UseTopNMin = true
 	mgr := NewUniversalManager(cfg)
 
 	// Дерево 1: использует глобальный TopN = 5
@@ -258,6 +259,7 @@ func TestTreeSpecificTopN(t *testing.T) {
 	// Дерево 2: переопределяет TopN = 10
 	cfg2 := DefaultConfig()
 	cfg2.TopN = 10
+	cfg2.UseTopNMin = true
 	tree2, _ := CreateTreeWithConfig[*Account](mgr, "tree2", cfg2)
 	
 	// Дерево 3: отключает TopN
