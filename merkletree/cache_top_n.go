@@ -237,24 +237,29 @@ func (tc *TopNCache[T]) GetIteratorMin() *TopNIterator[T] {
 // Создает атомарный snapshot под Read Lock
 // Thread-safe: snapshot независим от дальнейших модификаций
 func (tc *TopNCache[T]) GetIteratorMax() *TopNIterator[T] {
-	if !tc.enabled {
-		return NewTopNIterator[T](nil)
-	}
-	
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-	
-	if len(tc.items) == 0 {
-		return NewTopNIterator[T](nil)
-	}
-	
-	// Копируем весь слайс для создания независимого snapshot
-	snapshot := make([]T, len(tc.items))
-	copy(snapshot, tc.items)
-	
-	return NewTopNIterator(snapshot)
-}
+    if !tc.enabled {
+        return NewTopNIterator[T](nil)
+    }
 
+    tc.mu.RLock()
+    defer tc.mu.RUnlock()
+
+    if len(tc.items) == 0 {
+        return NewTopNIterator[T](nil)
+    }
+
+    snapshot := make([]T, len(tc.items))
+    copy(snapshot, tc.items)
+
+    // Если кеш ascending (min-heap) — разворачиваем для max-итерации
+    if tc.ascending {
+        for i, j := 0, len(snapshot)-1; i < j; i, j = i+1, j-1 {
+            snapshot[i], snapshot[j] = snapshot[j], snapshot[i]
+        }
+    }
+
+    return NewTopNIterator(snapshot)
+}
 // ============================================
 // Internal helpers (вызываются только под Lock)
 // ============================================

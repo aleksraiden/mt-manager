@@ -10,75 +10,117 @@ import (
 // includeStart - включать ли startKey
 // includeEnd - включать ли endKey
 func (t *Tree[T]) RangeQuery(startKey, endKey []byte, includeStart, includeEnd bool) []T {
-	if len(startKey) == 0 || len(endKey) == 0 {
-		return nil
-	}
-	
-	result := make([]T, 0)
-	t.rangeQueryNode(t.root, startKey, endKey, includeStart, includeEnd, 0, &result)
-	
-	// Сортируем результат по ID для детерминизма
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ID() < result[j].ID()
-	})
-	
-	return result
+    if len(startKey) == 0 || len(endKey) == 0 {
+        return nil
+    }
+
+    result := make([]T, 0)
+
+    t.items.Range(func(_, value any) bool {
+        item := value.(T)
+        itemKey := item.Key()
+        itemKeySlice := itemKey[:]
+
+        cmpStart := compareKeys(itemKeySlice, startKey)
+        cmpEnd := compareKeys(itemKeySlice, endKey)
+
+        inRange := false
+        switch {
+        case includeStart && includeEnd:
+            inRange = cmpStart >= 0 && cmpEnd <= 0
+        case includeStart && !includeEnd:
+            inRange = cmpStart >= 0 && cmpEnd < 0
+        case !includeStart && includeEnd:
+            inRange = cmpStart > 0 && cmpEnd <= 0
+        default:
+            inRange = cmpStart > 0 && cmpEnd < 0
+        }
+
+        if inRange {
+            result = append(result, item)
+        }
+        return true
+    })
+
+    sort.Slice(result, func(i, j int) bool {
+        return result[i].ID() < result[j].ID()
+    })
+
+    return result
 }
 
 // RangeQueryParallel параллельная версия для больших диапазонов
 // Рекомендуется для диапазонов > 1000 элементов
 func (t *Tree[T]) RangeQueryParallel(startKey, endKey []byte, includeStart, includeEnd bool) []T {
-	if len(startKey) == 0 || len(endKey) == 0 {
-		return nil
-	}
-	
-	t.root.mu.RLock()
-	numChildren := len(t.root.Children)
-	children := make([]*Node[T], numChildren)
-	copy(children, t.root.Children)
-	t.root.mu.RUnlock()
-	
-	if numChildren == 0 {
-		return nil
-	}
-	
-	// Канал для сбора результатов из каждой ветки
-	resultChan := make(chan []T, numChildren)
-	var wg sync.WaitGroup
-	
-	// Запускаем goroutine для каждой ветки первого уровня
-	for i := 0; i < numChildren; i++ {
-		wg.Add(1)
-		go func(child *Node[T]) {
-			defer wg.Done()
-			
-			localResult := make([]T, 0)
-			t.rangeQueryNode(child, startKey, endKey, includeStart, includeEnd, 1, &localResult)
-			
-			if len(localResult) > 0 {
-				resultChan <- localResult
-			}
-		}(children[i])
-	}
-	
-	// Закрываем канал после завершения всех worker'ов
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-	
-	// Собираем результаты
-	allResults := make([]T, 0)
-	for batch := range resultChan {
-		allResults = append(allResults, batch...)
-	}
-	
-	// Сортируем по ID
-	sort.Slice(allResults, func(i, j int) bool {
-		return allResults[i].ID() < allResults[j].ID()
-	})
-	
-	return allResults
+    // Снапшот всех элементов
+    allItems := t.GetAllItems()
+    if len(allItems) == 0 {
+        return nil
+    }
+
+    numWorkers := runtime.NumCPU()
+    if numWorkers > len(allItems) {
+        numWorkers = len(allItems)
+    }
+
+    chunkSize := (len(allItems) + numWorkers - 1) / numWorkers
+    resultChan := make(chan T, len(allItems))
+    var wg sync.WaitGroup
+
+    for i := 0; i < numWorkers; i++ {
+        start := i * chunkSize
+        if start >= len(allItems) {
+            break
+        }
+        end := start + chunkSize
+        if end > len(allItems) {
+            end = len(allItems)
+        }
+
+        wg.Add(1)
+        go func(chunk []T) {
+            defer wg.Done()
+            for _, item := range chunk {
+                itemKey := item.Key()
+                itemKeySlice := itemKey[:]
+
+                cmpStart := compareKeys(itemKeySlice, startKey)
+                cmpEnd := compareKeys(itemKeySlice, endKey)
+
+                inRange := false
+                switch {
+                case includeStart && includeEnd:
+                    inRange = cmpStart >= 0 && cmpEnd <= 0
+                case includeStart && !includeEnd:
+                    inRange = cmpStart >= 0 && cmpEnd < 0
+                case !includeStart && includeEnd:
+                    inRange = cmpStart > 0 && cmpEnd <= 0
+                default:
+                    inRange = cmpStart > 0 && cmpEnd < 0
+                }
+
+                if inRange {
+                    resultChan <- item
+                }
+            }
+        }(allItems[start:end])
+    }
+
+    go func() {
+        wg.Wait()
+        close(resultChan)
+    }()
+
+    result := make([]T, 0)
+    for item := range resultChan {
+        result = append(result, item)
+    }
+
+    sort.Slice(result, func(i, j int) bool {
+        return result[i].ID() < result[j].ID()
+    })
+
+    return result
 }
 
 // RangeQueryWorkerPool использует пул worker'ов для обхода

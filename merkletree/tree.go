@@ -11,17 +11,28 @@ import (
 )
 
 const (
-	NodeBlockSize = 1024 * 1024
-
+	NodeBlockSize 			= 8192 // 8k nodes per block, ~1-2MB depending on T
+	
 	// Агрессивные пороги для больших систем
-	SmallBatchThreshold    = 30  // Было 50
-	ParallelBatchThreshold = 150 // Было 200
+	SmallBatchThreshold    	= 30  // Было 50
+	ParallelBatchThreshold 	= 150 // Было 200
 )
 
 var (
 	// Константный хеш для удаленных узлов
 	DeletedNodeHash = blake3.Sum256([]byte("__DELETED_NODE__"))
 )
+
+var blake3HasherPool = sync.Pool{
+    New: func() any { return blake3.New() },
+}
+
+var childHashSlicePool = sync.Pool{
+    New: func() any {
+        s := make([][32]byte, 0, 256)
+        return &s
+    },
+}
 
 // Tree - убираем избыточный padding, оставляем только критичный
 type Tree[T Hashable] struct {
@@ -71,7 +82,7 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		cfg = DefaultConfig()
 	}
 
-	arena := newConcurrentArena[T]()
+	arena := newConcurrentArena[T](DefaultArenaBlockSize)
 	root := arena.alloc()
 
 	t := &Tree[T]{
@@ -81,10 +92,13 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		maxDepth: cfg.MaxDepth,
 	}
 	
-	if cfg.UseTopNMax == true {
-		t.topNCache = NewTopNCache[T](cfg.TopN, false)  // descending = max-heap
-	} else if cfg.UseTopNMin == true {
-		t.topNCache = NewTopNCache[T](cfg.TopN, true)	// ascending = min-heap
+	// СТАЛО: TopN > 0 всегда создаёт кеш, флаги уточняют режим
+	if cfg.TopN > 0 {
+		if cfg.UseTopNMax && !cfg.UseTopNMin {
+			t.topNCache = NewTopNCache[T](cfg.TopN, false) // явный max-heap
+		} else {
+			t.topNCache = NewTopNCache[T](cfg.TopN, true)  // min-heap (дефолт)
+		}
 	}
 	
 	t.cachedRoot.Store([32]byte{}) // zero value
@@ -93,6 +107,21 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 }
 
 //Одиночная вставка с блокировкой 
+func (t *Tree[T]) Insert(item T) {
+    t.items.Store(item.ID(), item)
+    t.itemCount.Add(1)
+    t.cache.put(item.ID(), item)
+    t.insertNode(t.root, item, 0)   // per-node locking внутри
+    t.rootCacheValid.Store(false)
+
+    if t.topNCache != nil {
+        t.topNCache.TryInsert(item)
+    }
+
+    t.insertCount.Add(1)
+}
+
+/**
 func (t *Tree[T]) Insert(item T) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -110,7 +139,7 @@ func (t *Tree[T]) Insert(item T) {
 	
 	t.insertCount.Add(1)
 }
-
+**/
 // InsertBatch вставляет батч элементов (автоматический выбор стратегии)
 func (t *Tree[T]) InsertBatch(items []T) {
 	if len(items) == 0 {
@@ -153,6 +182,7 @@ func (t *Tree[T]) insertBatchSimple(items []T) {
 	}
 	
 	t.itemCount.Add(uint64(len(items)))
+	t.insertCount.Add(uint64(len(items)))
 
 	t.rootCacheValid.Store(false)
 }
@@ -170,6 +200,7 @@ func (t *Tree[T]) insertBatchSequential(items []T) {
 		}
 	}
 	t.itemCount.Add(uint64(len(items)))
+	t.insertCount.Add(uint64(len(items)))
 
 	t.rootCacheValid.Store(false)
 }
@@ -225,6 +256,7 @@ func (t *Tree[T]) insertBatchParallel(items []T) {
 
 	wg.Wait()
 	t.itemCount.Add(uint64(len(items)))
+	t.insertCount.Add(uint64(len(items)))
 
 	for i := 0; i < numWorkers; i++ {
 		start := i * chunkSize
@@ -297,6 +329,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) {
 
 	wg.Wait()
 	t.itemCount.Add(uint64(len(items)))
+	t.insertCount.Add(uint64(len(items)))
 
 	// Фаза 2: Группировка
 	groupSize := 256
@@ -577,19 +610,10 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	copy(children, node.Children)
 	node.mu.RUnlock()
 	
+	// Сортировка индексов
 	slices.SortFunc(indices, func(a, b int) int {
 		return cmp.Compare(keys[a], keys[b])
 	})
-	
-	// Сортировка индексов
-	/**
-	for i := 0; i < count-1; i++ {
-		for j := i + 1; j < count; j++ {
-			if keys[indices[i]] > keys[indices[j]] {
-				indices[i], indices[j] = indices[j], indices[i]
-			}
-		}
-	}**/
 	
 	// Batch-хеширование листьев
 	var leafHashes map[*Node[T]][32]byte
@@ -624,7 +648,16 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	useParallel := allowParallel && depth < 2 && count >= 4 && runtime.NumCPU() > 1
 	
 	// Вычисляем хеши детей
-	childHashes := make([][32]byte, count)
+	//childHashes := make([][32]byte, count)
+	chPtr := childHashSlicePool.Get().(*[][32]byte)
+	childHashes := (*chPtr)[:count]          // переиспользуем память
+	
+	if cap(childHashes) < count {
+		childHashes = make([][32]byte, count) // расширяем если нужно
+		*chPtr = childHashes
+	} else {
+		childHashes = (*chPtr)[:count]
+	}
 	
 	if useParallel {
 		// Параллельное вычисление промежуточных узлов
@@ -645,14 +678,18 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	}
 	
 	// Хешируем результат
-	hasher := blake3.New()
+	hasher := blake3HasherPool.Get().(*blake3.Hasher)
+	hasher.Reset()
 	for i, idx := range indices {
 		hasher.Write([]byte{keys[idx]})
 		hasher.Write(childHashes[i][:])
 	}
-	
 	var result [32]byte
 	copy(result[:], hasher.Sum(nil))
+	blake3HasherPool.Put(hasher)
+	
+	*chPtr = (*chPtr)[:0]                    // сбрасываем len, cap сохраняем
+	childHashSlicePool.Put(chPtr)
 	
 	node.mu.Lock()
 	node.Hash = result
@@ -1223,19 +1260,17 @@ func (t *Tree[T]) ClearTopN() {
 // IterTopMin возвращает итератор для минимальных элементов
 // Итератор обходит элементы в порядке возрастания ключа
 func (t *Tree[T]) IterTopMin() *TopNIterator[T] {
-	if t.topNCache != nil {
-		return t.topNCache.GetIteratorMin()
-	}
-	
-	return nil
+    if t.topNCache != nil {
+        return t.topNCache.GetIteratorMin()
+    }
+    return NewTopNIterator[T](nil)  // HasNext() → false, Next() → zero,false
 }
 
 // IterTopMax возвращает итератор для максимальных элементов
 // Итератор обходит элементы в порядке убывания ключа
 func (t *Tree[T]) IterTopMax() *TopNIterator[T] {
-	if t.topNCache != nil {
-		return t.topNCache.GetIteratorMax()
-	}
-	
-	return nil
+    if t.topNCache != nil {
+        return t.topNCache.GetIteratorMax()
+    }
+    return NewTopNIterator[T](nil)  // безопасный пустой итератор
 }

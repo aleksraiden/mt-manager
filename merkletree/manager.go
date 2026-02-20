@@ -242,7 +242,9 @@ func (m *UniversalManager) computeMerkleRoot(hashes [][32]byte) [32]byte {
 		nextLevel := make([][32]byte, 0, (len(currentLevel)+1)/2)
 
 		for i := 0; i < len(currentLevel); i += 2 {
-			hasher := blake3.New()
+			hasher := blake3HasherPool.Get().(*blake3.Hasher)
+			hasher.Reset()
+
 			hasher.Write(currentLevel[i][:])
 
 			if i+1 < len(currentLevel) {
@@ -254,6 +256,9 @@ func (m *UniversalManager) computeMerkleRoot(hashes [][32]byte) [32]byte {
 
 			var parentHash [32]byte
 			copy(parentHash[:], hasher.Sum(nil))
+			
+			blake3HasherPool.Put(hasher)
+			
 			nextLevel = append(nextLevel, parentHash)
 		}
 
@@ -573,16 +578,22 @@ func (ti TreeInfo) String() string {
 
 // GetAllTreesInfo возвращает информацию обо всех деревьях
 func (m *UniversalManager) GetAllTreesInfo() []TreeInfo {
-	names := m.ListTrees()
-	infos := make([]TreeInfo, 0, len(names))
+	m.mu.RLock()
+    defer m.mu.RUnlock()
 
-	for _, name := range names {
-		if info, err := m.GetTreeInfo(name); err == nil {
-			infos = append(infos, info)
-		}
-	}
-
-	return infos
+    infos := make([]TreeInfo, 0, len(m.trees))
+    for name, tree := range m.trees {
+        stats := tree.GetStats()
+        root := tree.ComputeRoot() // ComputeRoot использует свои внутренние локи, не m.mu
+        infos = append(infos, TreeInfo{
+            Name:      name,
+            Size:      stats.TotalItems,
+            Nodes:     stats.AllocatedNodes,
+            CacheSize: stats.CacheSize,
+            Root:      root,
+        })
+    }
+    return infos
 }
 
 // SetDefaultConfig устанавливает конфигурацию по умолчанию для новых деревьев
