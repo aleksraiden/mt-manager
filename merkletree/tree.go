@@ -128,25 +128,6 @@ func (t *Tree[T]) Insert(item T) {
     t.insertCount.Add(1)
 }
 
-/**
-func (t *Tree[T]) Insert(item T) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	t.items.Store(item.ID(), item)
-	t.itemCount.Add(1)
-	t.cache.put(item.ID(), item)
-	t.insertNode(t.root, item, 0)
-	t.rootCacheValid.Store(false)
-	
-	// Обновляем TopN кеши
-	if t.topNCache != nil {
-		t.topNCache.TryInsert(item)
-	}
-	
-	t.insertCount.Add(1)
-}
-**/
 // InsertBatch вставляет батч элементов (автоматический выбор стратегии)
 func (t *Tree[T]) InsertBatch(items []T) {
 	if len(items) == 0 {
@@ -343,16 +324,19 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) {
 	if len(items) > 10000 {
 		groupSize = 4096
 	}
-	
+		
 	groups := make([][]T, groupSize)
 	for _, item := range items {
 		key := item.Key()
 		var groupKey int
 		if groupSize == 256 {
 			groupKey = int(key[0])
-		} else {
+		} else if groupSize == 4096 {
+			groupKey = ((int(key[0]) << 8) | int(key[1])) % groupSize
+		} else{
 			groupKey = (int(key[0]) << 8) | int(key[1])
 		}
+		
 		groups[groupKey] = append(groups[groupKey], item)
 	}
 
@@ -844,12 +828,6 @@ func (t *Tree[T]) Size() int {
 func (t *Tree[T]) GetAllItems() []T {
 	items := make([]T, 0, t.itemCount.Load())
 
-	/*
-	t.items.Range(func(key uint64, value interface{}) bool {
-		items = append(items, value.(T))
-		return true
-	})*/
-	
 	t.items.Range(func(_ uint64, value T) bool {
 		items = append(items, value)
 		return true
@@ -866,7 +844,6 @@ func (t *Tree[T]) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	//t.items = sync.Map{}
 	t.items.Clear()
 	t.itemCount.Store(0)
 	t.arena.reset()
@@ -881,6 +858,21 @@ func (t *Tree[T]) Clear() {
 	
 	t.dirtyNodes.Store(0)
 	t.deletedNodeCount.Store(0)
+}
+
+//Удаление и пересборка дерева, чтобы GC мог очистить удаленные элементы 
+func (t *Tree[T]) Compact() {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+	
+    t.arena.reset()
+    t.root = t.arena.alloc()
+    t.deletedNodeCount.Store(0)
+    t.items.Range(func(_ uint64, item T) bool {
+        t.insertNodeUnderGlobalLock(t.root, item, 0)
+        return true
+    })
+    t.rootCacheValid.Store(false)
 }
 
 type Stats struct {
