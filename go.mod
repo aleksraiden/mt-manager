@@ -1,6 +1,8 @@
-module github.com/aleksraiden/mt-manager
+module mt-manager
 
-go 1.25.0
+//github.com/aleksraiden/mt-manager
+
+go 1.26.0
 
 require (
 	github.com/cockroachdb/pebble v1.1.5
@@ -34,7 +36,7 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
-	golang.org/x/exp v0.0.0-20260212183809-81e46e3db34a // indirect
+	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

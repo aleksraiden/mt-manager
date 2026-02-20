@@ -3,6 +3,8 @@ package merkletree
 import (
 	"runtime"
 	"sync"
+	"slices"
+	"cmp"
 	"sync/atomic"
 
 	"github.com/zeebo/blake3"
@@ -40,27 +42,14 @@ type Tree[T Hashable] struct {
 	cachedRoot     atomic.Value		//[32]byte
 	rootCacheValid atomic.Bool
 	
-	valueExtractor1 func(T) uint64
-    valueExtractor2 func(T) uint64
-    cachedSum1      uint64
-    cachedSum2      uint64
-    sum1Dirty       bool
-    sum2Dirty       bool
-    sum1Mu          sync.RWMutex
-    sum2Mu          sync.RWMutex
-
 	// Метрики
 	insertCount        atomic.Uint64
-	batchInsertCount   atomic.Uint64
 	deleteCount        atomic.Uint64
 	deletedNodeCount   atomic.Uint64
 	getCount           atomic.Uint64
 	cacheHits          atomic.Uint64
 	cacheMisses        atomic.Uint64
 	computeCount       atomic.Uint64
-	batchCount         atomic.Uint64
-	simpleBatchCount   atomic.Uint64
-	parallelBatchCount atomic.Uint64
 }
 
 // Node - минимальный padding только для mutex
@@ -71,13 +60,8 @@ type Node[T Hashable] struct {
 	Value    T
 	IsLeaf   bool
 	dirty    atomic.Bool
-	
-	AggregatedSum1 uint64
-    AggregatedSum2 uint64
-    sum1Dirty      bool
-    sum2Dirty      bool
 
-	//_padding [7]byte // Выравнивание до 8 байт для mutex
+	_padding [7]byte // Выравнивание до 8 байт для mutex
 
 	mu sync.RWMutex // В отдельной cache line от данных
 }
@@ -123,8 +107,6 @@ func (t *Tree[T]) Insert(item T) {
 	if t.topNCache != nil {
 		t.topNCache.TryInsert(item)
 	}
-		
-	t.MarkAllSumsDirty()
 	
 	t.insertCount.Add(1)
 }
@@ -149,8 +131,6 @@ func (t *Tree[T]) InsertBatch(items []T) {
 		// > 5000 элементов: мега-параллельная с группировкой
 		t.insertBatchMegaParallel(items)
 	}
-	
-	t.batchInsertCount.Add(1)
 }
 
 // insertBatchSimple для маленьких батчей (с глобальной блокировкой)
@@ -174,11 +154,6 @@ func (t *Tree[T]) insertBatchSimple(items []T) {
 	
 	t.itemCount.Add(uint64(len(items)))
 
-	//for _, item := range items {
-	//	t.insertNodeUnderGlobalLock(t.root, item, 0)
-	//}
-	//t.mu.Unlock()
-
 	t.rootCacheValid.Store(false)
 }
 
@@ -188,15 +163,13 @@ func (t *Tree[T]) insertBatchSequential(items []T) {
 		t.items.Store(item.ID(), item)
 		t.cache.put(item.ID(), item)
 		
+		t.insertNode(t.root, item, 0)
+		
 		if t.topNCache != nil {
 			t.topNCache.TryInsert(item)
 		}
 	}
 	t.itemCount.Add(uint64(len(items)))
-
-	for _, item := range items {
-		t.insertNode(t.root, item, 0)
-	}
 
 	t.rootCacheValid.Store(false)
 }
@@ -617,14 +590,19 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	copy(children, node.Children)
 	node.mu.RUnlock()
 	
+	slices.SortFunc(indices, func(a, b int) int {
+		return cmp.Compare(keys[a], keys[b])
+	})
+	
 	// Сортировка индексов
+	/**
 	for i := 0; i < count-1; i++ {
 		for j := i + 1; j < count; j++ {
 			if keys[indices[i]] > keys[indices[j]] {
 				indices[i], indices[j] = indices[j], indices[i]
 			}
 		}
-	}
+	}**/
 	
 	// Batch-хеширование листьев
 	var leafHashes map[*Node[T]][32]byte
@@ -875,17 +853,12 @@ type Stats struct {
 	CacheSize         int
 	DirtyNodes        uint64
 	InsertCount       uint64
-	BatchInsertCount  uint64
 	DeleteCount       uint64 
 	GetCount          uint64
 	CacheHits         uint64
 	CacheMisses       uint64
 	CacheHitRate      float64
 	ComputeCount      uint64
-	BatchCount        uint64
-	SimpleBatches     uint64
-	ParallelBatches   uint64
-	SequentialBatches uint64
 }
 
 // GetStats возвращает полную статистику дерева
@@ -897,11 +870,6 @@ func (t *Tree[T]) GetStats() Stats {
 		hitRate = float64(hits) / float64(hits+misses) * 100
 	}
 
-	batchCount := t.batchCount.Load()
-	simpleBatches := t.simpleBatchCount.Load()
-	parallelBatches := t.parallelBatchCount.Load()
-	sequentialBatches := batchCount - simpleBatches - parallelBatches
-
 	return Stats{
 		TotalItems:        int(t.itemCount.Load()),
 		DeletedNodes:      int(t.deletedNodeCount.Load()), 
@@ -909,17 +877,12 @@ func (t *Tree[T]) GetStats() Stats {
 		CacheSize:         t.cache.size(),
 		DirtyNodes:        t.dirtyNodes.Load(),
 		InsertCount:       t.insertCount.Load(),
-		BatchInsertCount: t.batchInsertCount.Load(),
 		DeleteCount:       t.deleteCount.Load(),
 		GetCount:          t.getCount.Load(),
 		CacheHits:         hits,
 		CacheMisses:       misses,
 		CacheHitRate:      hitRate,
 		ComputeCount:      t.computeCount.Load(),
-		BatchCount:        batchCount,
-		SimpleBatches:     simpleBatches,
-		ParallelBatches:   parallelBatches,
-		SequentialBatches: sequentialBatches,
 	}
 }
 
@@ -947,7 +910,7 @@ func (t *Tree[T]) CacheStats() CacheStats {
 func (t *Tree[T]) getCacheCapacity() int {
 	capacity := 0
 	for _, shard := range t.cache.shards {
-		shard.mu.Lock()
+		shard.mu.RLock()
 		capacity += shard.capacity
 		shard.mu.Unlock()
 	}
@@ -981,8 +944,6 @@ func (t *Tree[T]) Delete(id uint64) bool {
 	
 	// Инвалидируем корневой хеш
 	t.rootCacheValid.Store(false)
-	
-	t.MarkAllSumsDirty()
 	
 	return true
 }
@@ -1127,6 +1088,7 @@ func (t *Tree[T]) deleteNode(node *Node[T], item T, depth int) {
 	node.mu.Unlock()
 }
 
+/***
 // deleteNodeUnderGlobalLock - БЕЗ per-node блокировок
 func (t *Tree[T]) deleteNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 	key := item.Key()
@@ -1162,8 +1124,7 @@ func (t *Tree[T]) deleteNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 		}
 	}
 }
-
-
+**/
 
 // Exists проверяет существование элемента
 func (t *Tree[T]) Exists(id uint64) bool {
@@ -1329,322 +1290,3 @@ func (t *Tree[T]) IterTopMax() *TopNIterator[T] {
 	
 	return nil
 }
-
-//Получим ссылку на внутренний мютекс дерева
-func (t *Tree[T]) GetTreeMu() *sync.RWMutex {
-	return &t.mu
-}
-
-
-//================================================================
-// ComputeSum1 вычисляет первую сумму всех значений в поддереве.
-// Использует кеширование аналогично механизму hash.
-// 
-// Алгоритм:
-// 1. Если sum1Dirty == false, возвращает кешированное значение (O(1))
-// 2. Если узел - лист, извлекает значение из элемента
-// 3. Если узел - внутренний, рекурсивно суммирует значения детей
-// 4. Сохраняет результат в кеш и сбрасывает dirty флаг
-//
-// Сложность: O(1) если кеш актуален, O(k) если k узлов помечены как dirty
-func (n *Node[T]) ComputeSum1(valueExtractor func(T) uint64) uint64 {
-    if valueExtractor == nil {
-        return 0
-    }
-    
-    if !n.sum1Dirty {
-        return n.AggregatedSum1
-    }
-    
-    n.mu.Lock()
-    defer n.mu.Unlock()
-    
-    if !n.sum1Dirty {
-        return n.AggregatedSum1
-    }
-    
-    if n.IsLeaf {
-        if n.Value != nil {
-            n.AggregatedSum1 = valueExtractor(n.Value)
-        } else {
-            n.AggregatedSum1 = 0
-        }
-    } else {
-        sum := 0.0
-        for _, child := range n.Children {
-            if child != nil {
-                sum += child.ComputeSum1(valueExtractor)
-            }
-        }
-        n.AggregatedSum1 = sum
-    }
-    
-    n.sum1Dirty = false
-    return n.AggregatedSum1
-}
-
-// ComputeSum2 вычисляет вторую сумму всех значений в поддереве.
-// Полностью аналогичен ComputeSum1, но для второй независимой агрегации.
-//
-// Сложность: O(1) если кеш актуален, O(k) для k dirty узлов
-func (n *Node[T]) ComputeSum2(valueExtractor func(T) uint64) uint64 {
-    if valueExtractor == nil {
-        return 0
-    }
-    
-    if !n.sum2Dirty {
-        return n.AggregatedSum2
-    }
-    
-    n.mu.Lock()
-    defer n.mu.Unlock()
-    
-    if !n.sum2Dirty {
-        return n.AggregatedSum2
-    }
-    
-    if n.IsLeaf {
-        if n.Value != nil {
-            n.AggregatedSum2 = valueExtractor(n.Value)
-        } else {
-            n.AggregatedSum2 = 0
-        }
-    } else {
-        sum := 0.0
-        for _, child := range n.Children {
-            if child != nil {
-                sum += child.ComputeSum2(valueExtractor)
-            }
-        }
-        n.AggregatedSum2 = sum
-    }
-    
-    n.sum2Dirty = false
-    return n.AggregatedSum2
-}
-
-// MarkSum1Dirty помечает узел как грязный для первой суммы.
-// Вызывается когда элемент в узле изменился и кеш нужно пересчитать.
-func (n *Node[T]) MarkSum1Dirty() {
-    if n == nil {
-        return
-    }
-    
-    n.mu.Lock()
-    n.sum1Dirty = true
-    n.mu.Unlock()
-}
-
-// MarkSum2Dirty помечает узел как грязный для второй суммы.
-func (n *Node[T]) MarkSum2Dirty() {
-    if n == nil {
-        return
-    }
-    
-    n.mu.Lock()
-    n.sum2Dirty = true
-    n.mu.Unlock()
-}
-
-// MarkAllSumsDirty помечает узел как грязный для обеих сумм.
-// Более эффективно чем вызывать MarkSum1Dirty() и MarkSum2Dirty() 
-// по отдельности, так как захватываем мьютекс только один раз.
-func (n *Node[T]) MarkAllSumsDirty() {
-    if n == nil {
-        return
-    }
-    
-    n.mu.Lock()
-    n.sum1Dirty = true
-    n.sum2Dirty = true
-    n.mu.Unlock()
-}
-
-// NewTreeWithAggregation создаёт дерево с поддержкой одной агрегации.
-//
-// Использование:
-//   tree := NewTreeWithAggregation[*Balance](100, func(b *Balance) uint64 {
-//       return b.totalAmount
-//   })
-func NewTreeWithAggregation[T Hashable](
-    order int,
-    valueExtractor1 func(T) uint64,
-) *Tree[T] {
-    t := NewTree[T](order)
-    t.valueExtractor1 = valueExtractor1
-    t.sum1Dirty = true
-    return t
-}
-
-// NewTreeWithDualAggregation создаёт дерево с двумя независимыми агрегациями.
-//
-// Использование:
-//   tree := NewTreeWithDualAggregation[*Balance](
-//       100,
-//       func(b *Balance) uint64 { return b.totalAmount },
-//       func(b *Balance) uint64 { return b.lockedAmount },
-//   )
-func NewTreeWithDualAggregation[T Hashable](
-    order int,
-    valueExtractor1 func(T) uint64,
-    valueExtractor2 func(T) uint64,
-) *Tree[T] {
-    t := NewTree[T](order)
-    t.valueExtractor1 = valueExtractor1
-    t.valueExtractor2 = valueExtractor2
-    t.sum1Dirty = true
-    t.sum2Dirty = true
-    return t
-}
-
-// SetAggregation устанавливает или изменяет функции агрегации 
-// для существующего дерева.
-//
-// Использование:
-//   tree := NewTree[*Balance](100)
-//   tree.SetAggregation(
-//       func(b *Balance) uint64 { return b.totalAmount },
-//       func(b *Balance) uint64 { return b.lockedAmount },
-//   )
-func (t *Tree[T]) SetAggregation(
-    valueExtractor1 func(T) uint64,
-    valueExtractor2 func(T) uint64,
-) {
-    t.valueExtractor1 = valueExtractor1
-    t.valueExtractor2 = valueExtractor2
-    t.MarkAllSumsDirty()
-}
-
-// GetSum1 возвращает первую агрегированную сумму всех элементов в дереве.
-//
-// Производительность:
-//   O(1) - если кеш актуален
-//   O(log N) - если были изменения
-//
-// Thread-safe
-func (t *Tree[T]) GetSum1() uint64 {
-    if t.valueExtractor1 == nil {
-        return 0
-    }
-    
-    t.sum1Mu.RLock()
-    if !t.sum1Dirty {
-        sum := t.cachedSum1
-        t.sum1Mu.RUnlock()
-        return sum
-    }
-    t.sum1Mu.RUnlock()
-    
-    sum := t.root.ComputeSum1(t.valueExtractor1)
-    
-    t.sum1Mu.Lock()
-    t.cachedSum1 = sum
-    t.sum1Dirty = false
-    t.sum1Mu.Unlock()
-    
-    return sum
-}
-
-// GetSum2 возвращает вторую агрегированную сумму всех элементов в дереве.
-//
-// Производительность:
-//   O(1) - если кеш актуален
-//   O(log N) - если были изменения
-//
-// Thread-safe
-func (t *Tree[T]) GetSum2() uint64 {
-    if t.valueExtractor2 == nil {
-        return 0
-    }
-    
-    t.sum2Mu.RLock()
-    if !t.sum2Dirty {
-        sum := t.cachedSum2
-        t.sum2Mu.RUnlock()
-        return sum
-    }
-    t.sum2Mu.RUnlock()
-    
-    sum := t.root.ComputeSum2(t.valueExtractor2)
-    
-    t.sum2Mu.Lock()
-    t.cachedSum2 = sum
-    t.sum2Dirty = false
-    t.sum2Mu.Unlock()
-    
-    return sum
-}
-
-// GetBothSums возвращает обе агрегированные суммы одновременно.
-//
-// Использование:
-//   total, locked := tree.GetBothSums()
-//   available := total - locked
-func (t *Tree[T]) GetBothSums() (sum1, sum2 uint64) {
-    return t.GetSum1(), t.GetSum2()
-}
-
-// MarkSum1Dirty помечает дерево и все узлы как грязные для первой суммы.
-// Вызывается автоматически при Insert/Update/Delete.
-//
-// Thread-safe
-func (t *Tree[T]) MarkSum1Dirty() {
-    if t.valueExtractor1 == nil {
-        return
-    }
-    
-    t.sum1Mu.Lock()
-    t.sum1Dirty = true
-    t.sum1Mu.Unlock()
-    
-    t.root.MarkSum1Dirty()
-}
-
-// MarkSum2Dirty помечает дерево и все узлы как грязные для второй суммы.
-//
-// Thread-safe
-func (t *Tree[T]) MarkSum2Dirty() {
-    if t.valueExtractor2 == nil {
-        return
-    }
-    
-    t.sum2Mu.Lock()
-    t.sum2Dirty = true
-    t.sum2Mu.Unlock()
-    
-    t.root.MarkSum2Dirty()
-}
-
-// MarkAllSumsDirty помечает дерево как грязное для обеих сумм.
-// Используется при операциях изменения данных (Insert/Update/Delete).
-//
-// Thread-safe
-func (t *Tree[T]) MarkAllSumsDirty() {
-    hasSum1 := t.valueExtractor1 != nil
-    hasSum2 := t.valueExtractor2 != nil
-    
-    if !hasSum1 && !hasSum2 {
-        return
-    }
-    
-    if hasSum1 {
-        t.sum1Mu.Lock()
-        t.sum1Dirty = true
-        t.sum1Mu.Unlock()
-    }
-    
-    if hasSum2 {
-        t.sum2Mu.Lock()
-        t.sum2Dirty = true
-        t.sum2Mu.Unlock()
-    }
-    
-    if hasSum1 && hasSum2 {
-        t.root.MarkAllSumsDirty()
-    } else if hasSum1 {
-        t.root.MarkSum1Dirty()
-    } else if hasSum2 {
-        t.root.MarkSum2Dirty()
-    }
-}
-
