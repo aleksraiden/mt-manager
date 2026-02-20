@@ -17,7 +17,7 @@ func (t *Tree[T]) RangeQuery(startKey, endKey []byte, includeStart, includeEnd b
 	result := make([]T, 0)
 
 	t.items.Range(func(_ uint64, item T) bool {
-		itemKey := item.Key()
+		itemKey := t.normalizeKey(item.Key())
 		ik := itemKey[:]
 
 		cmpStart := bytes.Compare(ik, startKey)
@@ -82,7 +82,7 @@ func (t *Tree[T]) RangeQueryParallel(startKey, endKey []byte, includeStart, incl
 			defer wg.Done()
 			local := make([]T, 0)
 			for _, item := range chunk {
-				itemKey := item.Key()
+				itemKey := t.normalizeKey(item.Key())
 				ik := itemKey[:]
 
 				cmpStart := bytes.Compare(ik, startKey)
@@ -159,7 +159,7 @@ func (t *Tree[T]) RangeQueryWorkerPool(startKey, endKey []byte, includeStart, in
 			defer wg.Done()
 			local := make([]T, 0)
 			for _, item := range chunk {
-				itemKey := item.Key()
+				itemKey := t.normalizeKey(item.Key())
 				ik := itemKey[:]
 
 				cmpStart := bytes.Compare(ik, startKey)
@@ -248,14 +248,14 @@ func compareKeys(a, b []byte) int {
 }
 
 func (t *Tree[T]) RangeQueryByID(startID, endID uint64, includeStart, includeEnd bool) []T {
-	sk := idToKey(startID)
-	ek := idToKey(endID)
+	sk := t.encodeID(startID) //insted of original idToKey
+	ek := t.encodeID(endID)
 	return t.RangeQuery(sk[:], ek[:], includeStart, includeEnd)
 }
 
 func (t *Tree[T]) RangeQueryByIDParallel(startID, endID uint64, includeStart, includeEnd bool) []T {
-	sk := idToKey(startID)
-	ek := idToKey(endID)
+	sk := t.encodeID(startID)
+	ek := t.encodeID(endID)
 	return t.RangeQueryParallel(sk[:], ek[:], includeStart, includeEnd)
 }
 

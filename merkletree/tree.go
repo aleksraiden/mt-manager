@@ -43,6 +43,8 @@ type Tree[T Hashable] struct {
 	arena      *ConcurrentArena[T]
 	cache      *ShardedCache[T]
 	maxDepth   int
+	keyOrder   KeyOrder
+	
 	mu         sync.RWMutex
 	
 	topNCache   	*TopNCache[T]	//Универсальный кеш (только один может быть)
@@ -95,6 +97,7 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		arena:    arena,
 		cache:    newShardedCache[T](cfg.CacheSize, cfg.CacheShards),
 		maxDepth: cfg.MaxDepth,
+		keyOrder: cfg.KeyEncoding,
 		items:	  NewShardedItemMap[T](),
 	}
 	
@@ -112,6 +115,26 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 	t.cachedRoot.Store([32]byte{}) // zero value
 	
 	return t
+}
+
+// normalizeKey применяет нужный порядок байт.
+// При KeyOrderMSB — no-op (нулевой оверхед).
+// При KeyOrderLSB — reverses bytes.
+func (t *Tree[T]) normalizeKey(key [8]byte) [8]byte {
+    if t.keyOrder == KeyOrderLSB {
+        return [8]byte{key[7], key[6], key[5], key[4],
+                       key[3], key[2], key[1], key[0]}
+    }
+    return key
+}
+
+// encodeID конвертирует uint64 в ключ с учётом keyOrder.
+// Используется в RangeQueryByID.
+func (t *Tree[T]) encodeID(id uint64) [8]byte {
+    if t.keyOrder == KeyOrderLSB {
+        return KeyLSB(id)
+    }
+    return KeyMSB(id)
 }
 
 //Одиночная вставка с блокировкой 
@@ -248,7 +271,7 @@ func (t *Tree[T]) insertBatchParallel(items []T) {
     }
     bucketMap := make(map[byte]*bucket, 256)
     for _, item := range items {
-        kb := item.Key()[0]
+        kb := t.normalizeKey(item.Key())[0]
         b, ok := bucketMap[kb]
         if !ok {
             b = &bucket{keyByte: kb}
@@ -364,7 +387,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) {
 	
 	groups := make([][]T, groupSize)
 	for _, item := range items {
-		key := item.Key()
+		key := t.normalizeKey(item.Key())
 		var groupKey int
 		if groupSize == 256 {
 			groupKey = int(key[0])
@@ -405,7 +428,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) {
 
 // insertNodeUnderGlobalLock - вставка БЕЗ per-node блокировок (вызывается под t.mu.Lock)
 func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
-	key := item.Key()
+	key := t.normalizeKey(item.Key())
 	
 	if depth >= t.maxDepth-1 {
 		idx := key[len(key)-1]
@@ -456,7 +479,7 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 
 // insertNode - ЕДИНЫЙ метод с per-node блокировками
 func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
-	key := item.Key()
+	key := t.normalizeKey(item.Key())
 	node.mu.Lock()
 	
 	if depth >= t.maxDepth-1 {
@@ -1099,7 +1122,7 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 
 // deleteNode - ЕДИНЫЙ метод удаления с per-node блокировками
 func (t *Tree[T]) deleteNode(node *Node[T], item T, depth int) {
-	key := item.Key()
+	key := t.normalizeKey(item.Key())
 	
 	node.mu.Lock()
 	
@@ -1254,7 +1277,7 @@ func (t *Tree[T]) GetMinKey() (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return keyToUint64(item.Key()), true
+	return keyToUint64(t.normalizeKey(item.Key())), true
 }
 
 // GetMaxKey возвращает максимальный ключ O(1)
@@ -1263,7 +1286,7 @@ func (t *Tree[T]) GetMaxKey() (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return keyToUint64(item.Key()), true
+	return keyToUint64(t.normalizeKey(item.Key())), true
 }
 
 // IsTopNEnabled проверяет, активен ли TopN кеш

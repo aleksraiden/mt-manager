@@ -17,13 +17,41 @@ type Hashable interface {
 	ID() uint64
 }
 
+type KeyOrder uint8
+
+const (
+    KeyOrderMSB KeyOrder = iota // BigEndian, default — range queries работают
+    KeyOrderLSB                 // LittleEndian — быстрее для numeric keys, без range
+)
+
+// Хелперы для использования в Key() реализации
+func KeyMSB(v uint64) [8]byte {
+    return EncodeKey(v) // уже существует, просто алиас
+}
+
+func KeyLSB(v uint64) [8]byte {
+    return [8]byte{
+        byte(v),
+        byte(v >> 8),
+        byte(v >> 16),
+        byte(v >> 24),
+        byte(v >> 32),
+        byte(v >> 40),
+        byte(v >> 48),
+        byte(v >> 56),
+    }
+}
+
+
 // Config содержит параметры конфигурации дерева
 type Config struct {
 	MaxDepth    int  // Максимальная глубина дерева
 	CacheSize   int  // Размер кеша
 	CacheShards uint // Количество шардов для кеша (2^n)
-	TopN        int  // Для хранения топ-левел кеша
 	
+	KeyEncoding KeyOrder
+	
+	TopN        int  // Для хранения топ-левел кеша
 	UseTopNMax 	bool
 	UseTopNMin 	bool
 }
