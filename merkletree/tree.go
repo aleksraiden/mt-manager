@@ -458,21 +458,16 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
 }
 
 func (t *Tree[T]) Get(id uint64) (T, bool) {
-    t.getCount.Add(1)
-    
-    // Быстрая проверка без обновления LRU
+    count := t.getCount.Add(1)  // ← единственный источник правды
+
     if item, ok := t.cache.tryGet(id); ok {
         t.cacheHits.Add(1)
-        
-        // Опционально: периодически обновляем LRU (каждый N-й доступ)
-        if t.getCount.Load() % 100 == 0 {
-            t.cache.put(id, item)  // Обновляем позицию
+        if count%100 == 0 {     // ← точно один вызов на каждое кратное 100
+            t.cache.put(id, item)
         }
-        
         return item, true
     }
 
-    // Обычная логика для cache miss
     if val, ok := t.items.Load(id); ok {
         item := val.(T)
         t.cache.put(id, item)
@@ -487,48 +482,40 @@ func (t *Tree[T]) Get(id uint64) (T, bool) {
 
 // ComputeRoot вычисляет корневой хеш (с автоматическим выбором стратегии)
 func (t *Tree[T]) ComputeRoot() [32]byte {
-    // Быстрое чтение (lock-free)
     if t.rootCacheValid.Load() {
         if val := t.cachedRoot.Load(); val != nil {
             return val.([32]byte)
         }
     }
-	
-	t.mu.RLock()
-		// Вычисляем новый root (дорого, делаем редко)
-		newRoot := t.computeNodeHash(t.root, 0, true)
-	t.mu.RUnlock()
-	
-    // CAS-loop: пытаемся установить, если dirty не изменился
-    for attempts := 0; attempts < 16; attempts++ { // лимит попыток, чтобы не loop forever
+
+    t.mu.RLock()
+    newRoot := t.computeNodeHash(t.root, 0, true)
+    t.mu.RUnlock()
+
+    for attempts := 0; attempts < 16; attempts++ {
         currentDirty := t.dirtyNodes.Load()
 
-        // Устанавливаем новый root
-        t.cachedRoot.Store(newRoot)
-        t.rootCacheValid.Store(true)
-
-        // Если dirty не изменился — успех (другие потоки не модифицировали дерево)
+        // CAS первый — только если успех, публикуем
         if t.dirtyNodes.CompareAndSwap(currentDirty, 0) {
+            t.cachedRoot.Store(newRoot)
+            t.rootCacheValid.Store(true)
             return newRoot
         }
-		
-		t.mu.RLock()
-			// Dirty изменился → кто-то вставил/удалил → пересчитываем
-			newRoot = t.computeNodeHash(t.root, 0, true)
-		t.mu.RUnlock()
+
+        // CAS провалился → кто-то изменил дерево → пересчитываем
+        t.mu.RLock()
+        newRoot = t.computeNodeHash(t.root, 0, true)
+        t.mu.RUnlock()
     }
 
-    // Редкий fallback: если CAS не удался много раз (очень высокая contention)
-    // — просто берём lock и делаем финальную запись
+    // Fallback под полным локом
     t.mu.Lock()
     defer t.mu.Unlock()
-    
-	newRoot = t.computeNodeHash(t.root, 0, true)
+    newRoot = t.computeNodeHash(t.root, 0, true)
     t.cachedRoot.Store(newRoot)
     t.rootCacheValid.Store(true)
     t.dirtyNodes.Store(0)
-    
-	return newRoot
+    return newRoot
 }
 
 // computeNodeHash - ЕДИНЫЙ метод с автоматическим параллелизмом
@@ -912,7 +899,7 @@ func (t *Tree[T]) getCacheCapacity() int {
 	for _, shard := range t.cache.shards {
 		shard.mu.RLock()
 		capacity += shard.capacity
-		shard.mu.Unlock()
+		shard.mu.RUnlock()
 	}
 	return capacity
 }
@@ -1087,44 +1074,6 @@ func (t *Tree[T]) deleteNode(node *Node[T], item T, depth int) {
 	
 	node.mu.Unlock()
 }
-
-/***
-// deleteNodeUnderGlobalLock - БЕЗ per-node блокировок
-func (t *Tree[T]) deleteNodeUnderGlobalLock(node *Node[T], item T, depth int) {
-	key := item.Key()
-	
-	if depth >= t.maxDepth-1 {
-		idx := key[len(key)-1]
-		
-		for i, k := range node.Keys {
-			if k == idx {
-				child := node.Children[i]
-				if child.IsLeaf {
-					var zero T
-					child.Value = zero
-					child.Hash = DeletedNodeHash
-					child.dirty.Store(false)
-					node.dirty.Store(true)
-					t.dirtyNodes.Add(1)
-					t.deletedNodeCount.Add(1)
-					return
-				}
-			}
-		}
-		return
-	}
-	
-	idx := key[depth]
-	for i, k := range node.Keys {
-		if k == idx {
-			t.deleteNodeUnderGlobalLock(node.Children[i], item, depth+1)
-			node.dirty.Store(true)
-			t.dirtyNodes.Add(1)
-			return
-		}
-	}
-}
-**/
 
 // Exists проверяет существование элемента
 func (t *Tree[T]) Exists(id uint64) bool {

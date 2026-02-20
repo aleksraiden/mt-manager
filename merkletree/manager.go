@@ -280,45 +280,47 @@ func (m *UniversalManager) InvalidateTreeRoot(treeName string) {
 
 // GetMerkleProof возвращает Merkle proof для конкретного дерева
 func (m *UniversalManager) GetMerkleProof(treeName string) (*MerkleProof, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+    // ComputeGlobalRoot сам управляет своими блокировками
+    globalRoot := m.ComputeGlobalRoot()
 
-	if _, exists := m.trees[treeName]; !exists {
-		return nil, fmt.Errorf("дерево '%s' не найдено", treeName)
-	}
+    m.mu.RLock()
+    defer m.mu.RUnlock()
 
-	names := make([]string, 0, len(m.trees))
-	for name := range m.trees {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+    if _, exists := m.trees[treeName]; !exists {
+        return nil, fmt.Errorf("дерево '%s' не найдено", treeName)
+    }
 
-	targetIndex := -1
-	for i, name := range names {
-		if name == treeName {
-			targetIndex = i
-			break
-		}
-	}
+    names := make([]string, 0, len(m.trees))
+    for name := range m.trees {
+        names = append(names, name)
+    }
+    sort.Strings(names)
 
-	if targetIndex == -1 {
-		return nil, fmt.Errorf("дерево '%s' не найдено в индексе", treeName)
-	}
+    targetIndex := -1
+    for i, name := range names {
+        if name == treeName {
+            targetIndex = i
+            break
+        }
+    }
+    if targetIndex == -1 {
+        return nil, fmt.Errorf("дерево '%s' не найдено в индексе", treeName)
+    }
 
-	roots := make([][32]byte, len(names))
-	for i, name := range names {
-		roots[i] = m.trees[name].ComputeRoot()
-	}
+    roots := make([][32]byte, len(names))
+    for i, name := range names {
+        roots[i] = m.trees[name].ComputeRoot()
+    }
 
-	proofPath, isLeft := m.computeProofPath(roots, targetIndex)
+    proofPath, isLeft := m.computeProofPath(roots, targetIndex)
 
-	return &MerkleProof{
-		TreeName:   treeName,
-		TreeRoot:   roots[targetIndex],
-		ProofPath:  proofPath,
-		IsLeft:     isLeft,
-		GlobalRoot: m.ComputeGlobalRoot(),
-	}, nil
+    return &MerkleProof{
+        TreeName:   treeName,
+        TreeRoot:   roots[targetIndex],
+        ProofPath:  proofPath,
+        IsLeft:     isLeft,
+        GlobalRoot: globalRoot, // ← pre-computed, без рекурсивной блокировки
+    }, nil
 }
 
 // computeProofPath вычисляет proof path для элемента по индексу
