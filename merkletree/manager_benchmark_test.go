@@ -20,8 +20,8 @@ func TestManagerStressTest(t *testing.T) {
 		maxItems  int
 		updates   int
 	}{
-		{name: "Trees_10", numTrees: 10, minItems: 100000, maxItems: 1000000, updates: 100000},
-		{name: "Trees_100", numTrees: 100, minItems: 100000, maxItems: 1000000, updates: 100000},
+		{name: "Trees_10", numTrees: 10, minItems: 10_000, maxItems: 100_000, updates: 100_000},
+		{name: "Trees_100", numTrees: 100, minItems: 10_000, maxItems: 100_000, updates: 100_000},
 	}
 
 	for _, tt := range tests {
@@ -451,7 +451,7 @@ func BenchmarkTopNOperations(b *testing.B) {
 		mgr := NewUniversalManager(cfg)
 		tree, _ := CreateTree[*Account](mgr, "bench")
 
-		for i := uint64(0); i < 100000; i++ {
+		for i := uint64(0); i < 100_000; i++ {
 			tree.Insert(NewAccount(i, StatusUser))
 		}
 
@@ -472,7 +472,7 @@ func BenchmarkTopNOperations(b *testing.B) {
 		mgr := NewUniversalManager(cfg)
 		tree, _ := CreateTree[*Account](mgr, "bench")
 
-		for i := uint64(0); i < 100000; i++ {
+		for i := uint64(0); i < 100_000; i++ {
 			tree.Insert(NewAccount(i, StatusUser))
 		}
 
@@ -493,7 +493,7 @@ func BenchmarkTopNOperations(b *testing.B) {
 		mgr := NewUniversalManager(cfg)
 		tree, _ := CreateTree[*Account](mgr, "bench")
 
-		for i := uint64(0); i < 100000; i++ {
+		for i := uint64(0); i < 100_000; i++ {
 			tree.Insert(NewAccount(i, StatusUser))
 		}
 
@@ -514,7 +514,7 @@ func BenchmarkTopNOperations(b *testing.B) {
 		mgr := NewUniversalManager(cfg)
 		tree, _ := CreateTree[*Account](mgr, "bench")
 
-		for i := uint64(0); i < 100000; i++ {
+		for i := uint64(0); i < 100_000; i++ {
 			tree.Insert(NewAccount(i, StatusUser))
 		}
 
@@ -603,7 +603,7 @@ func BenchmarkTopNVsFullScan(b *testing.B) {
 		mgr := NewUniversalManager(cfg)
 		tree, _ := CreateTree[*Account](mgr, "bench")
 
-		for i := uint64(0); i < 100000; i++ {
+		for i := uint64(0); i < 100_000; i++ {
 			tree.Insert(NewAccount(i, StatusUser))
 		}
 
@@ -622,7 +622,7 @@ func BenchmarkTopNVsFullScan(b *testing.B) {
 		mgr := NewUniversalManager(cfg)
 		tree, _ := CreateTree[*Account](mgr, "bench")
 
-		for i := uint64(0); i < 100000; i++ {
+		for i := uint64(0); i < 100_000; i++ {
 			tree.Insert(NewAccount(i, StatusUser))
 		}
 

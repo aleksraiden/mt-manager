@@ -84,6 +84,10 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 
 	arena := newConcurrentArena[T](DefaultArenaBlockSize)
 	root := arena.alloc()
+	
+	if cfg.MaxDepth < 1 || cfg.MaxDepth > 8 {
+        panic("merkletree: MaxDepth must be between 1 and 8 (key length)")
+    }
 
 	t := &Tree[T]{
 		root:     root,
