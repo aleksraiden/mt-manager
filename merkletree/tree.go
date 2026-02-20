@@ -37,7 +37,7 @@ var childHashSlicePool = sync.Pool{
 // Tree - убираем избыточный padding, оставляем только критичный
 type Tree[T Hashable] struct {
 	root       *Node[T]
-	items      sync.Map
+	items      *ShardedItemMap[T] //sync.Map
 	itemCount  atomic.Uint64
 	arena      *ConcurrentArena[T]
 	cache      *ShardedCache[T]
@@ -94,6 +94,7 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		arena:    arena,
 		cache:    newShardedCache[T](cfg.CacheSize, cfg.CacheShards),
 		maxDepth: cfg.MaxDepth,
+		items:	  NewShardedItemMap[T](),
 	}
 	
 	// СТАЛО: TopN > 0 всегда создаёт кеш, флаги уточняют режим
@@ -104,6 +105,8 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 			t.topNCache = NewTopNCache[T](cfg.TopN, true)  // min-heap (дефолт)
 		}
 	}
+	
+	
 	
 	t.cachedRoot.Store([32]byte{}) // zero value
 	
@@ -505,8 +508,8 @@ func (t *Tree[T]) Get(id uint64) (T, bool) {
         return item, true
     }
 
-    if val, ok := t.items.Load(id); ok {
-        item := val.(T)
+    if item, ok := t.items.Load(id); ok {
+        //item := val.(T)
         t.cache.put(id, item)
         t.cacheMisses.Add(1)
         return item, true
@@ -841,8 +844,14 @@ func (t *Tree[T]) Size() int {
 func (t *Tree[T]) GetAllItems() []T {
 	items := make([]T, 0, t.itemCount.Load())
 
-	t.items.Range(func(key, value interface{}) bool {
+	/*
+	t.items.Range(func(key uint64, value interface{}) bool {
 		items = append(items, value.(T))
+		return true
+	})*/
+	
+	t.items.Range(func(_ uint64, value T) bool {
+		items = append(items, value)
 		return true
 	})
 
@@ -857,7 +866,8 @@ func (t *Tree[T]) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.items = sync.Map{}
+	//t.items = sync.Map{}
+	t.items.Clear()
 	t.itemCount.Store(0)
 	t.arena.reset()
 	t.root = t.arena.alloc()
@@ -947,12 +957,12 @@ func (t *Tree[T]) getCacheCapacity() int {
 // Delete удаляет элемент по ID
 func (t *Tree[T]) Delete(id uint64) bool {
 	// Проверяем существование
-	val, exists := t.items.Load(id)
+	item, exists := t.items.Load(id)
 	if !exists {
 		return false
 	}
 	
-	item := val.(T)
+	//item := val.(T)
 	
 	// Удаляем из sync.Map
 	t.items.Delete(id)
@@ -986,12 +996,12 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 	
 	// Собираем элементы для удаления
 	for _, id := range ids {
-		val, exists := t.items.Load(id)
+		item, exists := t.items.Load(id)
 		if !exists {
 			continue
 		}
 		
-		item := val.(T)
+		//item := val.(T)
 		items = append(items, item)
 		
 		// Удаляем из maps

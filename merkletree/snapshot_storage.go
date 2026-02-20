@@ -8,7 +8,8 @@ import (
 	"sync/atomic"
 	"context"
 	"github.com/cockroachdb/pebble/v2"
-	//"github.com/cockroachdb/pebble/v2/bloom"
+	"github.com/cockroachdb/pebble/v2/bloom"
+	"golang.org/x/sync/errgroup"
 )
 
 // ============================================
@@ -36,42 +37,68 @@ type SnapshotStorage struct {
 
 // NewSnapshotStorage создает оптимизированное хранилище
 func NewSnapshotStorage(dbPath string) (*SnapshotStorage, error) {
+	// Block cache — самая важная настройка для read performance.
+    // Правило: ~30% от RAM, доступной процессу.
+    // Один объект Cache можно шарить между несколькими DB.
+    blockCache := pebble.NewCache(512 << 20) // 512MB
+    defer blockCache.Unref()                 // DB держит свой ref, этот освобождаем
+	//без этого cache не освобождается при db.Close()
+	
 	opts := &pebble.Options{
 		// Большой cache для горячих снапшотов
-		Cache: pebble.NewCache(256 << 20), // 256MB
+		Cache: blockCache, //pebble.NewCache(256 << 20), // 256MB
 		
 		// Большой write buffer для батчинга
 		MemTableSize: 128 << 20, // 128MB
 		
+		// Сколько memtable может существовать одновременно до stop-writes.
+        // 2 = пока один flush'ится, второй принимает записи.
+        // При 3+ — больше буферизации, но больше RAM.
+        MemTableStopWritesThreshold: 4,
+		
 		// Агрессивный compaction для меньшей фрагментации
 		L0CompactionThreshold: 2,
-		L0StopWritesThreshold: 12,
-		LBaseMaxBytes:         128 << 20,
 		
-		// Параллельный compaction
-		// v2+ pebble not included
-		/**
-		MaxConcurrentCompactions = func() int { return 4 },
-		// Bloom filters для быстрого поиска
-		Levels: []pebble.LevelOptions{{
-			BlockSize:      64 << 10, // 64KB блоки
-			IndexBlockSize: 128 << 10,
-			FilterPolicy:   bloom.FilterPolicy(10), // 10 bits = ~1% false positive
-			FilterType:     pebble.TableFilter,
-			Compression:    pebble.SnappyCompression, // Встроенное сжатие
-		}},
-		**/
-		// WAL оптимизации
-		WALBytesPerSync: 1 << 20, // 1MB - реже fsync
+        // Полная остановка записей (hard limit). Даём время compaction догнать.
+        L0StopWritesThreshold: 36,
 		
+		// Максимальный размер L1. Каждый следующий уровень = LBase * 10.
+        // L1=256MB → L2=2.5GB → L3=25GB → L4=250GB
+        LBaseMaxBytes: 		256 << 20, // 256MB
+
+		// Параллелизм compaction: (min, max) горутин
+        CompactionConcurrencyRange: func() (int, int) { return 1, 4 },
+					
+		// Буферизуем WAL-записи, fsync каждые 1MB вместо каждой записи.
+        // Снижает IOPS при batch-записях в 5–10x.
+        WALBytesPerSync: 1 << 20, // 1MB
+
+        // Аналогично для SSTable файлов.
+        BytesPerSync: 4 << 20, // 4MB
+				
 		// Файловые дескрипторы
 		MaxOpenFiles:       2000,
 		FormatMajorVersion: pebble.FormatNewest,
 		
 		// Sync настройки (можно отключить для скорости)
 		DisableWAL: false, // Рекомендуется false для надежности
-		BytesPerSync: 512 << 10, // 512KB
 	}
+	
+	// DBCompressionFastest = FastestCompression на всех уровнях
+    //   (аналог SnappyCompression из v1, фактически LZ4/Snappy).
+    // DBCompressionBalanced = Snappy на L0-L5, Zstd на L6.
+    // DBCompressionGood     = Snappy на L0-L5, Zstd(лучше) на L6.
+    opts.ApplyCompressionSettings(func() pebble.DBCompressionSettings {
+        return pebble.DBCompressionBalanced
+    })
+	
+	// Устанавливаем одинаковые параметры для всех 7 уровней.
+	for i := range opts.Levels {
+        opts.Levels[i].BlockSize      = 32 << 10  // 32KB
+        opts.Levels[i].IndexBlockSize = 256 << 10 // 256KB
+		opts.Levels[i].FilterPolicy   = bloom.FilterPolicy(10)
+        opts.Levels[i].FilterType    = pebble.TableFilter
+    }
 	
 	db, err := pebble.Open(dbPath, opts)
 	if err != nil {
@@ -142,89 +169,109 @@ func (s *SnapshotStorage) SaveSnapshot(version [32]byte, timestamp int64, trees 
 // LoadSnapshot загружает снапшот
 // Если version == nil, загружает последний
 func (s *SnapshotStorage) LoadSnapshot(version *[32]byte) (*Snapshot, error) {
-	// Определяем версию
-	targetVersion := version
-	if targetVersion == nil {
-		lastVer, err := s.getLastVersion()
-		if err != nil {
-			return nil, fmt.Errorf("no snapshots found: %w", err)
-		}
-		targetVersion = lastVer
-	}
-	
-	// Читаем метаданные
-	metaKey := makeSnapshotMetaKey(*targetVersion)
-	metaData, closer, err := s.db.Get(metaKey)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil, fmt.Errorf("snapshot not found: %x", targetVersion)
-		}
-		return nil, fmt.Errorf("failed to read metadata: %w", err)
-	}
-	
-	ver, timestamp, treeCount := decodeSnapshotMeta(metaData)
-	closer.Close()
-	
-	// Получаем список деревьев
-	treeNames, err := s.listSnapshotTrees(*targetVersion)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list trees: %w", err)
-	}
-	
-	// Загружаем деревья параллельно
-	trees := make(map[string]*TreeSnapshot, treeCount)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(treeNames))
-	
-	for _, treeName := range treeNames {
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
-			
-			treeKey := makeSnapshotTreeKey(*targetVersion, name)
-			treeData, closer, err := s.db.Get(treeKey)
-			if err != nil {
-				errChan <- fmt.Errorf("failed to read tree %s: %w", name, err)
-				return
-			}
-			
-			// Копируем данные
-			dataCopy := make([]byte, len(treeData))
-			copy(dataCopy, treeData)
-			closer.Close()
-			
-			// Создаем TreeSnapshot (данные уже сериализованы)
-			treeSnapshot := &TreeSnapshot{
-				TreeID: name,
-				Items:  [][]byte{dataCopy}, // Данные в сыром виде
-			}
-			
-			mu.Lock()
-			trees[name] = treeSnapshot
-			mu.Unlock()
-			
-			s.readBytes.Add(uint64(len(dataCopy)))
-		}(treeName)
-	}
-	
-	wg.Wait()
-	close(errChan)
-	
-	// Проверяем ошибки
-	if err := <-errChan; err != nil {
-		return nil, err
-	}
-	
-	s.readCount.Add(1)
-	
-	return &Snapshot{
-		SchemaVersion: CurrentSchemaVersion,
-		Version:       ver,
-		Timestamp:     timestamp,
-		TreeCount:     treeCount,
-		Trees:         trees,
-	}, nil
+    // Определяем версию
+    targetVersion := version
+    if targetVersion == nil {
+        lastVer, err := s.getLastVersion()
+        if err != nil {
+            return nil, fmt.Errorf("no snapshots found: %w", err)
+        }
+        targetVersion = lastVer
+    }
+
+    // Читаем метаданные
+    metaKey := makeSnapshotMetaKey(*targetVersion)
+    metaData, closer, err := s.db.Get(metaKey)
+    if err != nil {
+        if err == pebble.ErrNotFound {
+            return nil, fmt.Errorf("snapshot not found: %x", targetVersion)
+        }
+        return nil, fmt.Errorf("failed to read metadata: %w", err)
+    }
+    ver, timestamp, treeCount := decodeSnapshotMeta(metaData)
+    closer.Close()
+
+    treeNames, err := s.listSnapshotTrees(*targetVersion)
+    if err != nil {
+        return nil, fmt.Errorf("failed to list trees: %w", err)
+    }
+
+    // trees — общая карта результатов.
+    // Горутины пишут в разные ключи, но map не thread-safe,
+    // поэтому защищаем мьютексом.
+    trees := make(map[string]*TreeSnapshot, treeCount)
+    var mu sync.Mutex
+
+    // errgroup.WithContext создаёт группу + контекст.
+    // Контекст отменяется автоматически, как только
+    // ЛЮБАЯ горутина вернёт ненулевую ошибку.
+    // Это ключевое отличие от ручного WaitGroup+errChan:
+    // не нужно собирать ошибки вручную, первая ошибка
+    // останавливает всю группу.
+    g, ctx := errgroup.WithContext(context.Background())
+
+    for _, name := range treeNames {
+        // Важно: захватываем переменную в локальную копию
+        // до передачи в горутину. Без этого все горутины
+        // увидят последнее значение name из range.
+        name := name
+
+        g.Go(func() error {
+            // Проверяем контекст в начале горутины.
+            // Если другая горутина уже вернула ошибку,
+            // ctx будет отменён и мы не начнём лишнюю работу.
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            default:
+            }
+
+            treeKey := makeSnapshotTreeKey(*targetVersion, name)
+            treeData, closer, err := s.db.Get(treeKey)
+            if err != nil {
+                // Возвращаем ошибку — errgroup сохранит её
+                // и отменит ctx для остальных горутин.
+                return fmt.Errorf("failed to read tree %s: %w", name, err)
+            }
+
+            // Копируем данные ДО закрытия closer,
+            // потому что pebble освобождает буфер при Close.
+            dataCopy := make([]byte, len(treeData))
+            copy(dataCopy, treeData)
+            closer.Close()
+
+            treeSnapshot := &TreeSnapshot{
+                TreeID: name,
+                Items:  [][]byte{dataCopy},
+            }
+
+            // Единственное место конкуренции — запись в map.
+            // Лок берётся только здесь, не на весь I/O.
+            mu.Lock()
+            trees[name] = treeSnapshot
+            mu.Unlock()
+
+            s.readBytes.Add(uint64(len(dataCopy)))
+            return nil
+        })
+    }
+
+    // g.Wait() ждёт ВСЕ горутины И возвращает
+    // первую ненулевую ошибку (остальные отбрасываются).
+    // Если все горутины вернули nil — возвращает nil.
+    if err := g.Wait(); err != nil {
+        return nil, err
+    }
+
+    s.readCount.Add(1)
+
+    return &Snapshot{
+        SchemaVersion: CurrentSchemaVersion,
+        Version:       ver,
+        Timestamp:     timestamp,
+        TreeCount:     treeCount,
+        Trees:         trees,
+    }, nil
 }
 
 // ============================================

@@ -6,6 +6,7 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/zeebo/blake3 v0.2.4
+	golang.org/x/sync v0.19.0
 )
 
 require (

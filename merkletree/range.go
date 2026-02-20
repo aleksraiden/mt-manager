@@ -16,8 +16,7 @@ func (t *Tree[T]) RangeQuery(startKey, endKey []byte, includeStart, includeEnd b
 
 	result := make([]T, 0)
 
-	t.items.Range(func(_, value any) bool {
-		item := value.(T)
+	t.items.Range(func(_ uint64, item T) bool {
 		itemKey := item.Key()
 		ik := itemKey[:]
 
