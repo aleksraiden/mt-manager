@@ -24,15 +24,17 @@ type UniversalManager struct {
 type TreeOptions struct {
 	// TopN - количество топ элементов для этого дерева (0 = отключено)
 	// Если не указано, используется значение из Config
-	TopN *int
+	TopN 		*int
 	
 	// CacheSize - размер кеша для этого дерева (0 = отключено)
 	// Если не указано, используется значение из Config
-	CacheSize *int
+	CacheSize 	*int
 	
 	// CacheShards - количество шардов кеша для этого дерева
 	// Если не указано, используется значение из Config
 	CacheShards *uint
+	
+	KeyEncoding *KeyOrder
 }
 
 // NewUniversalManager создает новый универсальный менеджер деревьев
