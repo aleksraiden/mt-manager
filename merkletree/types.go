@@ -59,7 +59,7 @@ type Config struct {
 // DefaultConfig возвращает конфигурацию по умолчанию
 func DefaultConfig() *Config {
 	return &Config{
-		MaxDepth:    4,
+		MaxDepth:    8,
 		CacheSize:   65_536,
 		CacheShards: 8,
 		TopN:        0,
@@ -71,7 +71,7 @@ func DefaultConfig() *Config {
 // SmallConfig для небольших деревьев (<100K элементов)
 func SmallConfig() *Config {
 	return &Config{
-		MaxDepth:    3,
+		MaxDepth:    8,
 		CacheSize:   16_384, 	// 16K
 		CacheShards: 6,      	// 64 шарда
 	}
@@ -80,7 +80,7 @@ func SmallConfig() *Config {
 // MediumConfig для средних деревьев (100K-1M элементов)
 func MediumConfig() *Config {
 	return &Config{
-		MaxDepth:    4,
+		MaxDepth:    8,
 		CacheSize:   131_072, 	// 128K
 		CacheShards: 8,       	// 256 шардов
 	}
@@ -89,7 +89,7 @@ func MediumConfig() *Config {
 // LargeConfig для больших деревьев (1M-10M элементов)
 func LargeConfig() *Config {
 	return &Config{
-		MaxDepth:    4,
+		MaxDepth:    8,
 		CacheSize:   1_024_000, 	// 1M
 		CacheShards: 10,        // 1024 шарда
 	}
@@ -107,7 +107,7 @@ func HugeConfig() *Config {
 // NoCacheConfig без кеша (для экономии памяти)
 func NoCacheConfig() *Config {
 	return &Config{
-		MaxDepth:    4,
+		MaxDepth:    8,
 		CacheSize:   0, // Без кеша
 		CacheShards: 0,
 	}

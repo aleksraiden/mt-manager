@@ -5,6 +5,7 @@ import (
 	"sync"
 	"slices"
 	"cmp"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/zeebo/blake3"
@@ -491,6 +492,7 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
 				node.mu.Unlock()
 				
 				child.mu.Lock()
+				
 				child.Value = item
 				// НЕ вычисляем хеш! Только помечаем как грязный
 				child.dirty.Store(true)
