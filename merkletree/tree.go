@@ -650,10 +650,9 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	// Вычисляем хеши детей
 	//childHashes := make([][32]byte, count)
 	chPtr := childHashSlicePool.Get().(*[][32]byte)
-	childHashes := (*chPtr)[:count]          // переиспользуем память
-	
-	if cap(childHashes) < count {
-		childHashes = make([][32]byte, count) // расширяем если нужно
+	var childHashes [][32]byte
+	if cap(*chPtr) < count {
+		childHashes = make([][32]byte, count)
 		*chPtr = childHashes
 	} else {
 		childHashes = (*chPtr)[:count]

@@ -1,320 +1,292 @@
 package merkletree
 
 import (
-	"sort"
-	"sync"
+	"bytes"
+	"cmp"
+	"encoding/binary"
 	"runtime"
+	"slices"
+	"sync"
 )
 
-// RangeQuery возвращает все элементы в диапазоне [startKey, endKey)
-// includeStart - включать ли startKey
-// includeEnd - включать ли endKey
 func (t *Tree[T]) RangeQuery(startKey, endKey []byte, includeStart, includeEnd bool) []T {
-    if len(startKey) == 0 || len(endKey) == 0 {
-        return nil
-    }
+	if len(startKey) == 0 || len(endKey) == 0 {
+		return nil
+	}
 
-    result := make([]T, 0)
+	result := make([]T, 0)
 
-    t.items.Range(func(_, value any) bool {
-        item := value.(T)
-        itemKey := item.Key()
-        itemKeySlice := itemKey[:]
+	t.items.Range(func(_, value any) bool {
+		item := value.(T)
+		itemKey := item.Key()
+		ik := itemKey[:]
 
-        cmpStart := compareKeys(itemKeySlice, startKey)
-        cmpEnd := compareKeys(itemKeySlice, endKey)
+		cmpStart := bytes.Compare(ik, startKey)
+		cmpEnd := bytes.Compare(ik, endKey)
 
-        inRange := false
-        switch {
-        case includeStart && includeEnd:
-            inRange = cmpStart >= 0 && cmpEnd <= 0
-        case includeStart && !includeEnd:
-            inRange = cmpStart >= 0 && cmpEnd < 0
-        case !includeStart && includeEnd:
-            inRange = cmpStart > 0 && cmpEnd <= 0
-        default:
-            inRange = cmpStart > 0 && cmpEnd < 0
-        }
+		var hit bool
+		switch {
+		case includeStart && includeEnd:
+			hit = cmpStart >= 0 && cmpEnd <= 0
+		case includeStart && !includeEnd:
+			hit = cmpStart >= 0 && cmpEnd < 0
+		case !includeStart && includeEnd:
+			hit = cmpStart > 0 && cmpEnd <= 0
+		default:
+			hit = cmpStart > 0 && cmpEnd < 0
+		}
 
-        if inRange {
-            result = append(result, item)
-        }
-        return true
-    })
+		if hit {
+			result = append(result, item)
+		}
+		return true
+	})
 
-    sort.Slice(result, func(i, j int) bool {
-        return result[i].ID() < result[j].ID()
-    })
+	slices.SortFunc(result, func(a, b T) int {
+		return cmp.Compare(a.ID(), b.ID())
+	})
 
-    return result
+	return result
 }
 
-// RangeQueryParallel параллельная версия для больших диапазонов
-// Рекомендуется для диапазонов > 1000 элементов
 func (t *Tree[T]) RangeQueryParallel(startKey, endKey []byte, includeStart, includeEnd bool) []T {
-    // Снапшот всех элементов
-    allItems := t.GetAllItems()
-    if len(allItems) == 0 {
-        return nil
-    }
+	if len(startKey) == 0 || len(endKey) == 0 {
+		return nil
+	}
 
-    numWorkers := runtime.NumCPU()
-    if numWorkers > len(allItems) {
-        numWorkers = len(allItems)
-    }
+	allItems := t.GetAllItems()
+	if len(allItems) == 0 {
+		return nil
+	}
 
-    chunkSize := (len(allItems) + numWorkers - 1) / numWorkers
-    resultChan := make(chan T, len(allItems))
-    var wg sync.WaitGroup
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(allItems) {
+		numWorkers = len(allItems)
+	}
 
-    for i := 0; i < numWorkers; i++ {
-        start := i * chunkSize
-        if start >= len(allItems) {
-            break
-        }
-        end := start + chunkSize
-        if end > len(allItems) {
-            end = len(allItems)
-        }
+	chunkSize := (len(allItems) + numWorkers - 1) / numWorkers
+	partials := make([][]T, numWorkers)
+	var wg sync.WaitGroup
 
-        wg.Add(1)
-        go func(chunk []T) {
-            defer wg.Done()
-            for _, item := range chunk {
-                itemKey := item.Key()
-                itemKeySlice := itemKey[:]
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		if start >= len(allItems) {
+			break
+		}
+		end := start + chunkSize
+		if end > len(allItems) {
+			end = len(allItems)
+		}
 
-                cmpStart := compareKeys(itemKeySlice, startKey)
-                cmpEnd := compareKeys(itemKeySlice, endKey)
+		wg.Add(1)
+		go func(idx int, chunk []T) {
+			defer wg.Done()
+			local := make([]T, 0)
+			for _, item := range chunk {
+				itemKey := item.Key()
+				ik := itemKey[:]
 
-                inRange := false
-                switch {
-                case includeStart && includeEnd:
-                    inRange = cmpStart >= 0 && cmpEnd <= 0
-                case includeStart && !includeEnd:
-                    inRange = cmpStart >= 0 && cmpEnd < 0
-                case !includeStart && includeEnd:
-                    inRange = cmpStart > 0 && cmpEnd <= 0
-                default:
-                    inRange = cmpStart > 0 && cmpEnd < 0
-                }
+				cmpStart := bytes.Compare(ik, startKey)
+				cmpEnd := bytes.Compare(ik, endKey)
 
-                if inRange {
-                    resultChan <- item
-                }
-            }
-        }(allItems[start:end])
-    }
+				var hit bool
+				switch {
+				case includeStart && includeEnd:
+					hit = cmpStart >= 0 && cmpEnd <= 0
+				case includeStart && !includeEnd:
+					hit = cmpStart >= 0 && cmpEnd < 0
+				case !includeStart && includeEnd:
+					hit = cmpStart > 0 && cmpEnd <= 0
+				default:
+					hit = cmpStart > 0 && cmpEnd < 0
+				}
 
-    go func() {
-        wg.Wait()
-        close(resultChan)
-    }()
+				if hit {
+					local = append(local, item)
+				}
+			}
+			partials[idx] = local
+		}(i, allItems[start:end])
+	}
 
-    result := make([]T, 0)
-    for item := range resultChan {
-        result = append(result, item)
-    }
+	wg.Wait()
 
-    sort.Slice(result, func(i, j int) bool {
-        return result[i].ID() < result[j].ID()
-    })
+	result := make([]T, 0)
+	for _, p := range partials {
+		result = append(result, p...)
+	}
 
-    return result
+	slices.SortFunc(result, func(a, b T) int {
+		return cmp.Compare(a.ID(), b.ID())
+	})
+
+	return result
 }
 
-// RangeQueryWorkerPool использует пул worker'ов для обхода
 func (t *Tree[T]) RangeQueryWorkerPool(startKey, endKey []byte, includeStart, includeEnd bool, numWorkers int) []T {
 	if len(startKey) == 0 || len(endKey) == 0 {
 		return nil
 	}
-	
+
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
 	}
-	
-	t.root.mu.RLock()
-	children := make([]*Node[T], len(t.root.Children))
-	copy(children, t.root.Children)
-	t.root.mu.RUnlock()
-	
-	// Канал задач
-	tasks := make(chan *Node[T], len(children))
-	for _, child := range children {
-		tasks <- child
+
+	allItems := t.GetAllItems()
+	if len(allItems) == 0 {
+		return nil
 	}
-	close(tasks)
-	
-	// Канал результатов
-	resultChan := make(chan []T, len(children))
+
+	if numWorkers > len(allItems) {
+		numWorkers = len(allItems)
+	}
+
+	chunkSize := (len(allItems) + numWorkers - 1) / numWorkers
+	partials := make([][]T, numWorkers)
 	var wg sync.WaitGroup
-	
-	// Запускаем worker'ы
+
 	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		if start >= len(allItems) {
+			break
+		}
+		end := start + chunkSize
+		if end > len(allItems) {
+			end = len(allItems)
+		}
+
 		wg.Add(1)
-		go func() {
+		go func(idx int, chunk []T) {
 			defer wg.Done()
-			for child := range tasks {
-				localResult := make([]T, 0)
-				t.rangeQueryNode(child, startKey, endKey, includeStart, includeEnd, 1, &localResult)
-				if len(localResult) > 0 {
-					resultChan <- localResult
+			local := make([]T, 0)
+			for _, item := range chunk {
+				itemKey := item.Key()
+				ik := itemKey[:]
+
+				cmpStart := bytes.Compare(ik, startKey)
+				cmpEnd := bytes.Compare(ik, endKey)
+
+				var hit bool
+				switch {
+				case includeStart && includeEnd:
+					hit = cmpStart >= 0 && cmpEnd <= 0
+				case includeStart && !includeEnd:
+					hit = cmpStart >= 0 && cmpEnd < 0
+				case !includeStart && includeEnd:
+					hit = cmpStart > 0 && cmpEnd <= 0
+				default:
+					hit = cmpStart > 0 && cmpEnd < 0
+				}
+
+				if hit {
+					local = append(local, item)
 				}
 			}
-		}()
+			partials[idx] = local
+		}(i, allItems[start:end])
 	}
-	
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-	
-	// Собираем результаты
-	allResults := make([]T, 0)
-	for batch := range resultChan {
-		allResults = append(allResults, batch...)
+
+	wg.Wait()
+
+	result := make([]T, 0)
+	for _, p := range partials {
+		result = append(result, p...)
 	}
-	
-	// Сортируем
-	sort.Slice(allResults, func(i, j int) bool {
-		return allResults[i].ID() < allResults[j].ID()
+
+	slices.SortFunc(result, func(a, b T) int {
+		return cmp.Compare(a.ID(), b.ID())
 	})
-	
-	return allResults
+
+	return result
 }
 
-// rangeQueryNode рекурсивный обход для range-запроса
+// rangeQueryNode оставлен для внутреннего использования (computeNodeHash и т.п.)
 func (t *Tree[T]) rangeQueryNode(node *Node[T], startKey, endKey []byte, includeStart, includeEnd bool, depth int, result *[]T) {
 	if node == nil {
 		return
 	}
-	
+
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	
-	// Если это лист - проверяем вхождение в диапазон
+
 	if node.IsLeaf {
-		// Проверяем, что это не удаленный узел
 		if node.Hash == DeletedNodeHash {
 			return
 		}
-		
+
 		itemKey := node.Value.Key()
-		itemKeySlice := itemKey[:]
-		
-		// Сравниваем с границами
-		cmpStart := compareKeys(itemKeySlice, startKey)
-		cmpEnd := compareKeys(itemKeySlice, endKey)
-		
-		inRange := false
-		if includeStart && includeEnd {
-			inRange = cmpStart >= 0 && cmpEnd <= 0
-		} else if includeStart && !includeEnd {
-			inRange = cmpStart >= 0 && cmpEnd < 0
-		} else if !includeStart && includeEnd {
-			inRange = cmpStart > 0 && cmpEnd <= 0
-		} else {
-			inRange = cmpStart > 0 && cmpEnd < 0
+		ik := itemKey[:]
+
+		cmpStart := bytes.Compare(ik, startKey)
+		cmpEnd := bytes.Compare(ik, endKey)
+
+		var hit bool
+		switch {
+		case includeStart && includeEnd:
+			hit = cmpStart >= 0 && cmpEnd <= 0
+		case includeStart && !includeEnd:
+			hit = cmpStart >= 0 && cmpEnd < 0
+		case !includeStart && includeEnd:
+			hit = cmpStart > 0 && cmpEnd <= 0
+		default:
+			hit = cmpStart > 0 && cmpEnd < 0
 		}
-		
-		if inRange {
+
+		if hit {
 			*result = append(*result, node.Value)
 		}
 		return
 	}
-	
-	// Промежуточный узел - обходим все ветки
-	for i := 0; i < len(node.Keys); i++ {
+
+	for i := range node.Keys {
 		t.rangeQueryNode(node.Children[i], startKey, endKey, includeStart, includeEnd, depth+1, result)
 	}
 }
 
-// compareKeys сравнивает два ключа лексикографически
-// Возвращает: -1 если a < b, 0 если a == b, 1 если a > b
+// compareKeys — обёртка над bytes.Compare (SIMD на x86/ARM).
 func compareKeys(a, b []byte) int {
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-	
-	for i := 0; i < minLen; i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	
-	// Если все байты равны, сравниваем длины
-	if len(a) < len(b) {
-		return -1
-	}
-	if len(a) > len(b) {
-		return 1
-	}
-	return 0
+	return bytes.Compare(a, b)
 }
 
-// RangeQueryByID - более удобный вариант для uint64 ID
 func (t *Tree[T]) RangeQueryByID(startID, endID uint64, includeStart, includeEnd bool) []T {
-	startKey := idToKey(startID)
-	endKey := idToKey(endID)
-	return t.RangeQuery(startKey, endKey, includeStart, includeEnd)
+	sk := idToKey(startID)
+	ek := idToKey(endID)
+	return t.RangeQuery(sk[:], ek[:], includeStart, includeEnd)
 }
 
-// RangeQueryByIDParallel параллельная версия для больших диапазонов
 func (t *Tree[T]) RangeQueryByIDParallel(startID, endID uint64, includeStart, includeEnd bool) []T {
-	startKey := idToKey(startID)
-	endKey := idToKey(endID)
-	return t.RangeQueryParallel(startKey, endKey, includeStart, includeEnd)
+	sk := idToKey(startID)
+	ek := idToKey(endID)
+	return t.RangeQueryParallel(sk[:], ek[:], includeStart, includeEnd)
 }
 
-// RangeQueryAuto автоматически выбирает последовательную или параллельную версию
-// в зависимости от размера ожидаемого результата
 func (t *Tree[T]) RangeQueryAuto(startKey, endKey []byte, includeStart, includeEnd bool) []T {
 	if len(startKey) == 0 || len(endKey) == 0 {
 		return nil
 	}
-	
-	// Эвристика: для больших диапазонов используем параллельную версию
+
 	startID := keyToID(startKey)
 	endID := keyToID(endKey)
 	rangeSize := endID - startID
-	
-	// Параллелизм выгоден для диапазонов > 1000 элементов
+
 	if rangeSize > 1000 {
 		return t.RangeQueryParallel(startKey, endKey, includeStart, includeEnd)
 	}
-	
+
 	return t.RangeQuery(startKey, endKey, includeStart, includeEnd)
 }
 
-// idToKey конвертирует uint64 в []byte (big-endian)
-func idToKey(id uint64) []byte {
-	key := make([]byte, 8)
-	key[0] = byte(id >> 56)
-	key[1] = byte(id >> 48)
-	key[2] = byte(id >> 40)
-	key[3] = byte(id >> 32)
-	key[4] = byte(id >> 24)
-	key[5] = byte(id >> 16)
-	key[6] = byte(id >> 8)
-	key[7] = byte(id)
+// idToKey — возвращает [8]byte (на стеке, без heap-аллокации).
+func idToKey(id uint64) [8]byte {
+	var key [8]byte
+	binary.BigEndian.PutUint64(key[:], id)
 	return key
 }
 
-// keyToID конвертирует []byte в uint64
+// keyToID конвертирует []byte в uint64.
 func keyToID(key []byte) uint64 {
 	if len(key) < 8 {
 		return 0
 	}
-	return uint64(key[0])<<56 |
-		uint64(key[1])<<48 |
-		uint64(key[2])<<40 |
-		uint64(key[3])<<32 |
-		uint64(key[4])<<24 |
-		uint64(key[5])<<16 |
-		uint64(key[6])<<8 |
-		uint64(key[7])
+	return binary.BigEndian.Uint64(key)
 }
