@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/bloom"
+	"context"
+	"github.com/cockroachdb/pebble/v2"
+	//"github.com/cockroachdb/pebble/v2/bloom"
 )
 
 // ============================================
@@ -49,8 +49,9 @@ func NewSnapshotStorage(dbPath string) (*SnapshotStorage, error) {
 		LBaseMaxBytes:         128 << 20,
 		
 		// Параллельный compaction
-		MaxConcurrentCompactions: func() int { return 4 },
-		
+		// v2+ pebble not included
+		/**
+		MaxConcurrentCompactions = func() int { return 4 },
 		// Bloom filters для быстрого поиска
 		Levels: []pebble.LevelOptions{{
 			BlockSize:      64 << 10, // 64KB блоки
@@ -59,7 +60,7 @@ func NewSnapshotStorage(dbPath string) (*SnapshotStorage, error) {
 			FilterType:     pebble.TableFilter,
 			Compression:    pebble.SnappyCompression, // Встроенное сжатие
 		}},
-		
+		**/
 		// WAL оптимизации
 		WALBytesPerSync: 1 << 20, // 1MB - реже fsync
 		
@@ -344,9 +345,12 @@ func (s *SnapshotStorage) DeleteSnapshot(version [32]byte) error {
 
 // Compact принудительно сжимает базу
 func (s *SnapshotStorage) Compact() error {
+	//v2 not support without context
 	start := []byte(prefixSnapshotTree)
 	end := []byte(prefixSnapshotTree + "\xff")
-	return s.db.Compact(start, end, true)
+	return s.db.Compact(context.Background(), start, end, true)
+	
+	//return true
 }
 
 // Flush сбрасывает memtable на диск
