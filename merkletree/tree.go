@@ -5,6 +5,7 @@ import (
 	"sync"
 	"slices"
 	"cmp"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/zeebo/blake3"
