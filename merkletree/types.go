@@ -2,6 +2,7 @@ package merkletree
 
 import (
 	"encoding/binary"
+	"fmt"
 )
 
 // Hashable - интерфейс для любых объектов, которые можно хранить в дереве
@@ -10,7 +11,7 @@ type Hashable interface {
 	// Hash возвращает криптографический хеш объекта
 	Hash() [32]byte
 
-	// Key возвращает ключ для индексации в дереве (8 байт BigEndian)
+	// Key возвращает ключ для индексации в дереве
 	Key() [8]byte
 
 	// ID возвращает уникальный идентификатор объекта
@@ -127,4 +128,20 @@ func EncodeKey(id uint64) [8]byte {
 	var key [8]byte
 	binary.BigEndian.PutUint64(key[:], id)
 	return key
+}
+
+// CollisionError возникает когда два разных элемента
+// претендуют на один лист дерева
+type CollisionError struct {
+    Slot       byte    // байт-индекс слота (key[depth])
+    Depth      int     // глубина коллизии
+    ExistingID uint64  // кто уже занял слот
+    NewID      uint64  // кто пытается вставиться
+}
+
+func (e *CollisionError) Error() string {
+    return fmt.Sprintf(
+        "tree collision: depth=%d slot=0x%02X existing_id=%d new_id=%d",
+        e.Depth, e.Slot, e.ExistingID, e.NewID,
+    )
 }

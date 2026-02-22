@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 	"sync"
+	"errors"
 	"math/rand"
 )
 
@@ -14,7 +15,9 @@ func TestTreeBasicOperations(t *testing.T) {
 	// Вставка аккаунтов
 	for i := uint64(0); i < 1000; i++ {
 		acc := NewAccount(i, StatusUser)
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			t.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 	}
 
 	// Проверка размера
@@ -48,7 +51,10 @@ func TestTreeBatchInsert(t *testing.T) {
 	}
 
 	// Пакетная вставка
-	tree.InsertBatch(accounts)
+	errs := tree.InsertBatch(accounts)
+    if len(errs) > 0 {
+        t.Fatalf("unexpected collisions in batch: %v", errs)
+    }
 
 	if tree.Size() != 1000 {
 		t.Errorf("Ожидалось 1000 аккаунтов, получено %d", tree.Size())
@@ -61,7 +67,9 @@ func TestTreeRootHash(t *testing.T) {
 	// Вставка детерминированных аккаунтов
 	for i := uint64(0); i < 100; i++ {
 		acc := NewAccountDeterministic(i, StatusUser) // <-- Изменено
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			t.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 	}
 
 	root1 := tree.ComputeRoot()
@@ -89,7 +97,9 @@ func TestCacheHit(t *testing.T) {
 	// Вставка аккаунтов
 	for i := uint64(0); i < 1000; i++ {
 		acc := NewAccount(i, StatusUser)
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			t.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 	}
 
 	// Первое чтение - кеш промах
@@ -146,7 +156,9 @@ func BenchmarkTreeInsert(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		acc := NewAccount(uint64(i), StatusUser)
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			b.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 	}
 }
 
@@ -173,7 +185,9 @@ func BenchmarkTreeGet(b *testing.B) {
 	// Подготовка данных
 	for i := uint64(0); i < 1000000; i++ {
 		acc := NewAccount(i, StatusUser)
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			b.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 	}
 
 	b.ResetTimer()
@@ -207,7 +221,9 @@ func BenchmarkTreeComputeRoot(b *testing.B) {
 	// Подготовка данных
 	for i := uint64(0); i < 10000; i++ {
 		acc := NewAccount(i, StatusUser)
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			b.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 	}
 
 	b.ResetTimer()
@@ -233,7 +249,9 @@ func TestLargeScalePerformance(t *testing.T) {
 
 	for i := uint64(0); i < 5_000_000; i++ {
 		acc := NewAccount(i, StatusUser)
-		tree.Insert(acc)
+		if err := tree.Insert(acc); err != nil {
+			t.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
+		}
 
 		if i > 0 && i%1_000_000 == 0 {
 			t.Logf("Вставлено %dM аккаунтов", i/1_000_000)
@@ -322,16 +340,135 @@ func BenchmarkConcurrentGetAndRootHighContention(b *testing.B) {
 func TestRootChangesAfterMutation(t *testing.T) {
     tree := New[*Account](DefaultConfig())
     acc1 := NewAccount(1, StatusUser)
-    tree.Insert(acc1)
+    if err := tree.Insert(acc1); err != nil {
+		t.Fatalf("unexpected collision on insert ID=%d: %v", acc1.UID, err)
+	}
 
     root1 := tree.ComputeRoot()
 
     acc2 := NewAccount(2, StatusUser)
-    tree.Insert(acc2)
+    if err := tree.Insert(acc2); err != nil {
+		t.Fatalf("unexpected collision on insert ID=%d: %v", acc2.UID, err)
+	}
 
     root2 := tree.ComputeRoot()
 
     if root1 == root2 {
         t.Error("Root hash должен измениться после вставки")
+    }
+}
+
+// TestCollisionIsDetected проверяет что коллизия возвращает ошибку
+// и НЕ перезаписывает существующий элемент
+func TestCollisionIsDetected(t *testing.T) {
+    // MaxDepth=3 + BigEndian: IDs 1 и 257 имеют одинаковый путь
+    // key[0]=0x00, key[1]=0x00, key[7]=0x01 для обоих
+    cfg := &Config{MaxDepth: 3, CacheSize: 1024, CacheShards: 4}
+    tree := New[*Account](cfg)
+
+    // Первая вставка — должна пройти
+    acc1 := NewAccount(1, StatusUser)
+    if err := tree.Insert(acc1); err != nil {
+        t.Fatalf("первая вставка не должна давать ошибку: %v", err)
+    }
+
+    // Вторая вставка с коллизионным ID — должна вернуть CollisionError
+    acc257 := NewAccount(257, StatusUser) // key[7] == 0x01, как у ID=1
+    err := tree.Insert(acc257)
+    if err == nil {
+        t.Fatal("ожидалась CollisionError, получили nil")
+    }
+
+    var colErr *CollisionError
+    if !errors.As(err, &colErr) {
+        t.Fatalf("ожидался *CollisionError, получили %T: %v", err, err)
+    }
+
+    t.Logf("коллизия обнаружена корректно: %v", colErr)
+
+    // Проверяем что оригинальный элемент НЕ перезаписан
+    if tree.Size() != 1 {
+        t.Errorf("размер должен быть 1, получено %d", tree.Size())
+    }
+
+    got, ok := tree.Get(1)
+    if !ok {
+        t.Fatal("ID=1 должен существовать")
+    }
+    if got.UID != 1 {
+        t.Errorf("ID=1 должен быть нетронут, получен UID=%d", got.UID)
+    }
+
+    // ID=257 не должен быть в дереве
+    _, ok = tree.Get(257)
+    if ok {
+        t.Error("ID=257 не должен быть в дереве после коллизии")
+    }
+}
+
+// TestUpdateSameIDIsNotCollision проверяет что обновление того же ID
+// не считается коллизией
+func TestUpdateSameIDIsNotCollision(t *testing.T) {
+    tree := New[*Account](DefaultConfig())
+
+    acc := NewAccount(42, StatusUser)
+    if err := tree.Insert(acc); err != nil {
+        t.Fatalf("первая вставка: %v", err)
+    }
+
+    //StatusMM — любой статус отличный от StatusUser, чтобы убедиться что UPDATE прошёл
+    accUpdated := NewAccount(42, StatusMM)
+    if err := tree.Insert(accUpdated); err != nil {
+        t.Fatalf("UPDATE того же ID не должен давать коллизию: %v", err)
+    }
+
+    got, _ := tree.Get(42)
+
+    if got.Status != StatusMM {
+        t.Errorf("UPDATE должен обновить значение, ожидался StatusMM, получен %v", got.Status)
+    }
+}
+
+// TestBatchCollisionPartialSuccess проверяет что при коллизии в батче
+// успешные элементы вставляются, коллизионные — нет
+func TestBatchCollisionPartialSuccess(t *testing.T) {
+    cfg := &Config{MaxDepth: 3, CacheSize: 1024, CacheShards: 4}
+    tree := New[*Account](cfg)
+
+    // ID=1 уже в дереве
+    if err := tree.Insert(NewAccount(1, StatusUser)); err != nil {
+        t.Fatal(err)
+    }
+
+    // Батч: ID=2 (чистый), ID=257 (коллизия с ID=1), ID=3 (чистый)
+    batch := []*Account{
+        NewAccount(2, StatusUser),   // чистый
+        NewAccount(257, StatusUser), // коллизия: key[7]=0x01 как у ID=1
+        NewAccount(3, StatusUser),   // чистый
+    }
+
+    errs := tree.InsertBatch(batch)
+
+    // Ровно одна ошибка
+    if len(errs) != 1 {
+        t.Errorf("ожидалась 1 ошибка, получено %d: %v", len(errs), errs)
+    }
+
+    // Размер: 1 (существующий) + 2 (успешные из батча) = 3
+    if tree.Size() != 3 {
+        t.Errorf("ожидалось 3 элемента, получено %d", tree.Size())
+    }
+
+    // ID=2 и ID=3 должны быть в дереве
+    if _, ok := tree.Get(2); !ok {
+        t.Error("ID=2 должен быть вставлен")
+    }
+    if _, ok := tree.Get(3); !ok {
+        t.Error("ID=3 должен быть вставлен")
+    }
+
+    // ID=257 не должен быть в дереве
+    if _, ok := tree.Get(257); ok {
+        t.Error("ID=257 не должен быть в дереве после коллизии")
     }
 }
