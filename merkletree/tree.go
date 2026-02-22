@@ -436,6 +436,22 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 		for i, k := range node.Keys {
 			if k == idx {
 				child := node.Children[i]
+//DEBUG
+	existingID := child.Value.ID()
+	if existingID != 0 && existingID != item.ID() {
+		existingKey := child.Value.Key()
+		newKey := item.Key()
+		fmt.Printf(
+			"[COLLISION/GLOBAL] depth=%d maxDepth=%d slot=0x%02X\n"+
+			"  existing: ID=%d key=%X\n"+
+			"  new:      ID=%d key=%X\n",
+			depth, t.maxDepth, idx,
+			existingID, existingKey,
+			item.ID(), newKey,
+		)
+	}
+//END	
+				
 				child.Value = item
 				// помечаем как грязный
 				child.dirty.Store(true)
@@ -491,6 +507,23 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
 				node.mu.Unlock()
 				
 				child.mu.Lock()
+//DEBUG				
+		existingID := child.Value.ID()
+        if existingID != 0 && existingID != item.ID() {
+            existingKey := child.Value.Key()
+            newKey := item.Key()
+            fmt.Printf(
+                "[COLLISION] depth=%d maxDepth=%d slot=0x%02X\n"+
+                "  existing: ID=%d key=%X\n"+
+                "  new:      ID=%d key=%X\n"+
+                "  key bytes match on: [%d]=%02X [%d]=%02X ... [7]=%02X\n",
+                depth, t.maxDepth, idx,
+                existingID, existingKey,
+                item.ID(), newKey,
+                depth-1, newKey[depth-1], depth, newKey[depth], newKey[7],
+            )
+        }				
+//====				
 				child.Value = item
 				// НЕ вычисляем хеш! Только помечаем как грязный
 				child.dirty.Store(true)
