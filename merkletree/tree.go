@@ -439,14 +439,14 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 				child := node.Children[i]
 //DEBUG
 	existingID := child.Value.ID()
-	if (t.name == "OrderbookBTCUSD_PERP_ASK" || t.name == "OrderbookBTCUSD_PERP_BID") && existingID != 0 && existingID != item.ID() {
+	if existingID != 0 && existingID != item.ID() {
 		existingKey := child.Value.Key()
 		newKey := item.Key()
 		fmt.Printf(
-			"[COLLISION/GLOBAL] depth=%d maxDepth=%d slot=0x%02X\n"+
+			"[COLLISION/GLOBAL - %s] depth=%d maxDepth=%d slot=0x%02X\n"+
 			"  existing: ID=%d key=%X\n"+
 			"  new:      ID=%d key=%X\n",
-			depth, t.maxDepth, idx,
+			t.name, depth, t.maxDepth, idx,
 			existingID, existingKey,
 			item.ID(), newKey,
 		)
@@ -510,15 +510,15 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
 				child.mu.Lock()
 //DEBUG				
 		existingID := child.Value.ID()
-        if (t.name == "OrderbookBTCUSD_PERP_ASK" || t.name == "OrderbookBTCUSD_PERP_BID") && existingID != 0 && existingID != item.ID() {
+        if existingID != 0 && existingID != item.ID() {
             existingKey := child.Value.Key()
             newKey := item.Key()
             fmt.Printf(
-                "[COLLISION] depth=%d maxDepth=%d slot=0x%02X\n"+
+                "[COLLISION - %s] depth=%d maxDepth=%d slot=0x%02X\n"+
                 "  existing: ID=%d key=%X\n"+
                 "  new:      ID=%d key=%X\n"+
                 "  key bytes match on: [%d]=%02X [%d]=%02X ... [7]=%02X\n",
-                depth, t.maxDepth, idx,
+                t.name, depth, t.maxDepth, idx,
                 existingID, existingKey,
                 item.ID(), newKey,
                 depth-1, newKey[depth-1], depth, newKey[depth], newKey[7],
