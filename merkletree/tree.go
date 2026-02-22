@@ -110,9 +110,7 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 			t.topNCache = NewTopNCache[T](cfg.TopN, true)  // min-heap (дефолт)
 		}
 	}
-	
-	
-	
+		
 	t.cachedRoot.Store([32]byte{}) // zero value
 	
 	return t
@@ -437,6 +435,7 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 		for i, k := range node.Keys {
 			if k == idx {
 				child := node.Children[i]
+				
 				child.Value = item
 				// помечаем как грязный
 				child.dirty.Store(true)
@@ -492,7 +491,7 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
 				node.mu.Unlock()
 				
 				child.mu.Lock()
-				
+
 				child.Value = item
 				// НЕ вычисляем хеш! Только помечаем как грязный
 				child.dirty.Store(true)
