@@ -439,7 +439,7 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) {
 				child := node.Children[i]
 //DEBUG
 	existingID := child.Value.ID()
-	if existingID != 0 && existingID != item.ID() {
+	if (t.name == "OrderbookBTCUSD_PERP_ASK" || t.name == "OrderbookBTCUSD_PERP_BID") && existingID != 0 && existingID != item.ID() {
 		existingKey := child.Value.Key()
 		newKey := item.Key()
 		fmt.Printf(
@@ -510,7 +510,7 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) {
 				child.mu.Lock()
 //DEBUG				
 		existingID := child.Value.ID()
-        if existingID != 0 && existingID != item.ID() {
+        if (t.name == "OrderbookBTCUSD_PERP_ASK" || t.name == "OrderbookBTCUSD_PERP_BID") && existingID != 0 && existingID != item.ID() {
             existingKey := child.Value.Key()
             newKey := item.Key()
             fmt.Printf(
