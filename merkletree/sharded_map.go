@@ -7,10 +7,17 @@ import (
 const itemShardCount = 64  // степень двойки
 
 type itemShard[T Hashable] struct {
-    mu    sync.RWMutex
-    items map[uint64]T
-    // cache line padding: RWMutex=24b + map ptr=8b → нужно 32b до 64
-    _     [32]byte
+    // Горячие поля (часто читаются без лока)
+    items map[uint64]T          // 0–7
+
+    // Паддинг до конца первой cache line
+    _padding0 [56]byte           // 8–63
+
+    // Мьютекс в отдельной cache line
+    mu        sync.RWMutex       // 64–87
+
+    // Паддинг до следующей cache line
+    _padding1 [40]byte           // 88–127
 }
 
 type ShardedItemMap[T Hashable] struct {

@@ -36,35 +36,38 @@ var childHashSlicePool = sync.Pool{
     },
 }
 
-// Tree - убираем избыточный padding, оставляем только критичный
+// Tree
 type Tree[T Hashable] struct {
-	root       *Node[T]
-	items      *ShardedItemMap[T] //sync.Map
-	itemCount  atomic.Uint64
-	arena      *ConcurrentArena[T]
-	cache      *ShardedCache[T]
-	maxDepth   int
-	keyOrder   KeyOrder
-	
-	mu         sync.RWMutex
-	
-	topNCache   	*TopNCache[T]	//Универсальный кеш (только один может быть)
-	
-	name            string  // Имя дерева (для снапшотов)
+    root          *Node[T]
+    items         *ShardedItemMap[T]
+    itemCount     atomic.Uint64
+    arena         *ConcurrentArena[T]
+    cache         *ShardedCache[T]
+    maxDepth      int
+    keyOrder      KeyOrder
 
-	// Lazy hashing (компактно)
-	dirtyNodes     atomic.Uint64
-	cachedRoot     atomic.Value		//[32]byte
-	rootCacheValid atomic.Bool
-	
-	// Метрики
-	insertCount        atomic.Uint64
-	deleteCount        atomic.Uint64
-	deletedNodeCount   atomic.Uint64
-	getCount           atomic.Uint64
-	cacheHits          atomic.Uint64
-	cacheMisses        atomic.Uint64
-	computeCount       atomic.Uint64
+    _padding0     [40]byte          // ← до 64–128 байт
+
+    mu            sync.RWMutex
+
+    topNCache     *TopNCache[T]
+    name          string
+
+    _padding1     [48]byte
+    dirtyNodes    atomic.Uint64
+    cachedRoot    atomic.Value
+    rootCacheValid atomic.Bool
+
+    _padding2     [40]byte
+    insertCount   atomic.Uint64
+    deleteCount   atomic.Uint64
+    deletedNodeCount atomic.Uint64
+    getCount      atomic.Uint64
+
+    _padding3     [32]byte
+    cacheHits     atomic.Uint64
+    cacheMisses   atomic.Uint64
+    computeCount  atomic.Uint64
 }
 
 // Node - минимальный padding только для mutex
