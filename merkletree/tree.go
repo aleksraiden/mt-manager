@@ -70,15 +70,17 @@ type Tree[T Hashable] struct {
 // Node - минимальный padding только для mutex
 type Node[T Hashable] struct {
 	Hash     [32]byte
-	Children []*Node[T]
-	Keys     []byte
-	Value    T
+    Children []*Node[T]
+    Keys     []byte
+    Value    T
+	
 	IsLeaf   bool
-	dirty    atomic.Bool
-
-	_padding [7]byte // Выравнивание до 8 байт для mutex
-
-	mu sync.RWMutex // В отдельной cache line от данных
+	
+	_padding1 [55]byte     // выравнивание до 64 байт
+    dirty    atomic.Bool
+	
+	_padding2 [56]byte     // или 48–64 байт
+    mu       sync.RWMutex // В отдельной cache line от данных
 }
 
 func New[T Hashable](cfg *Config) *Tree[T] {
