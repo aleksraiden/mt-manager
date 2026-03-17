@@ -1,6 +1,6 @@
 module github.com/aleksraiden/mt-manager
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/cockroachdb/pebble/v2 v2.1.4
