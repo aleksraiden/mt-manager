@@ -633,12 +633,12 @@ func (m *UniversalManager) CreateSnapshotAsync() <-chan SnapshotResult {
 }
 
 // LoadFromSnapshot загружает снапшот
-func (m *UniversalManager) LoadFromSnapshot(version *[32]byte) error {
+func (m *UniversalManager) LoadFromSnapshot(version [32]byte) error {
 	if m.snapshotMgr == nil {
 		return fmt.Errorf("snapshot manager not initialized")
 	}
 
-	return m.snapshotMgr.LoadSnapshot(m, version)
+	return m.snapshotMgr.LoadSnapshot(m, &version)
 }
 
 // GetSnapshotMetadata возвращает метаданные
@@ -677,8 +677,8 @@ func (m *UniversalManager) GetSnapshotMetrics() SnapshotMetrics {
 	return m.snapshotMgr.GetMetrics()
 }
 
-// GetSnapshotStats возвращает статистику хранилища
-func (m *UniversalManager) GetSnapshotStats() StorageStats {
+// GetSnapshotStorageStats возвращает статистику хранилища
+func (m *UniversalManager) GetSnapshotStorageStats() StorageStats {
 	if m.snapshotMgr == nil {
 		return StorageStats{}
 	}

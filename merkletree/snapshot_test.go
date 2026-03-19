@@ -174,7 +174,7 @@ func TestSnapshotMetrics(t *testing.T) {
 	}
 
 	// Статистика хранилища
-	stats := mgr.GetSnapshotStats()
+	stats := mgr.GetSnapshotStorageStats()
 	t.Logf("Storage stats:")
 	t.Logf("  Written: %d bytes", stats.WrittenBytes)
 	t.Logf("  Writes:  %d", stats.WriteCount)
@@ -302,7 +302,7 @@ func TestSnapshotStorage(t *testing.T) {
 		t.Fatalf("Failed to compact: %v", err)
 	}
 
-	stats := mgr.GetSnapshotStats()
+	stats := mgr.GetSnapshotStorageStats()
 	t.Logf("After compact - Cache hit rate: %.2f%%", stats.CacheHitRate)
 }
 
@@ -505,7 +505,7 @@ func TestSnapshotStress(t *testing.T) {
 	t.Logf("Compacted in %v", time.Since(start))
 
 	// Финальная статистика
-	stats := mgr.GetSnapshotStats()
+	stats := mgr.GetSnapshotStorageStats()
 	t.Logf("Final stats:")
 	t.Logf("  Writes: %d (%d bytes)", stats.WriteCount, stats.WrittenBytes)
 	t.Logf("  Reads:  %d (%d bytes)", stats.ReadCount, stats.ReadBytes)
