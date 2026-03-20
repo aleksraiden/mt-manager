@@ -319,6 +319,12 @@ func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte
             return fmt.Errorf("factory returned nil for unknown tree %q", name)
         }
         tree.SetName(name)
+		
+		if len(treeSnap.Items) == 0 {
+			// Пустое дерево — пропускаем, дерево уже создано пустым
+			newTrees[name] = tree
+			continue
+		}
 
         // treeSnap.Items[0] — это наш блоб из encodeItemsBlob
         itemBytes, err := decodeItemsBlob(treeSnap.Items[0])

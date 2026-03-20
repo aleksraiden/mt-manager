@@ -74,59 +74,27 @@ func NewAccountFactory() *Account {
 	return &Account{}
 }
 
-// Serialize реализует интерфейс Serializable
+// Serialize реализует интерфейс Serializable для Account
+// Layout: [PublicKey 32][UID 8][key 8][EmailHash 8][Status 1] = 57 bytes
 func (a *Account) Serialize() ([]byte, error) {
-	buf := make([]byte, 32+8+8+8+1) // PublicKey + UID + key + EmailHash + Status
-	offset := 0
-	
-	// PublicKey (32 bytes)
-	copy(buf[offset:], a.PublicKey[:])
-	offset += 32
-	
-	// UID (8 bytes)
-	binary.BigEndian.PutUint64(buf[offset:], a.UID)
-	offset += 8
-	
-	// key (8 bytes)
-	copy(buf[offset:], a.key[:])
-	offset += 8
-	
-	// EmailHash (8 bytes)
-	binary.BigEndian.PutUint64(buf[offset:], a.EmailHash)
-	offset += 8
-	
-	// Status (1 byte)
-	buf[offset] = byte(a.Status)
-	
+	buf := make([]byte, 57)
+	copy(buf[0:32], a.PublicKey[:])
+	binary.BigEndian.PutUint64(buf[32:40], a.UID)
+	copy(buf[40:48], a.key[:])
+	binary.BigEndian.PutUint64(buf[48:56], a.EmailHash)
+	buf[56] = byte(a.Status)
 	return buf, nil
 }
 
-// Deserialize реализует интерфейс Serializable
+// Deserialize реализует интерфейс Serializable для Account
 func (a *Account) Deserialize(data []byte) error {
 	if len(data) < 57 {
-		return fmt.Errorf("invalid account data: expected at least 57 bytes, got %d", len(data))
+		return fmt.Errorf("account: need 57 bytes, got %d", len(data))
 	}
-	
-	offset := 0
-	
-	// PublicKey
-	copy(a.PublicKey[:], data[offset:offset+32])
-	offset += 32
-	
-	// UID
-	a.UID = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
-	
-	// key
-	copy(a.key[:], data[offset:offset+8])
-	offset += 8
-	
-	// EmailHash
-	a.EmailHash = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
-	
-	// Status
-	a.Status = AccountStatus(data[offset])
-	
+	copy(a.PublicKey[:], data[0:32])
+	a.UID = binary.BigEndian.Uint64(data[32:40])
+	copy(a.key[:], data[40:48])
+	a.EmailHash = binary.BigEndian.Uint64(data[48:56])
+	a.Status = AccountStatus(data[56])
 	return nil
 }

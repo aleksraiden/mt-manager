@@ -63,41 +63,26 @@ func (b *Balance) CanWithdraw(amount uint64) bool {
 	return b.Available >= amount
 }
 
-// Serialize реализует интерфейс Serializable
-func (b *Balance) Serialize() []byte {
-	buf := make([]byte, 8+4+8+8+8) // UserID + AssetID + Available + Locked + key
-	offset := 0
-	
-	binary.BigEndian.PutUint64(buf[offset:], b.UserID)
-	offset += 8
-	binary.BigEndian.PutUint32(buf[offset:], b.AssetID)
-	offset += 4
-	binary.BigEndian.PutUint64(buf[offset:], b.Available)
-	offset += 8
-	binary.BigEndian.PutUint64(buf[offset:], b.Locked)
-	offset += 8
-	copy(buf[offset:], b.key[:])
-	
-	return buf
+// Balance layout: [key 8][UserID 8][AssetID 4][Available 8][Locked 8] = 36 bytes
+func (b *Balance) Serialize() ([]byte, error) {
+	buf := make([]byte, 36)
+	copy(buf[0:8], b.key[:])
+	binary.BigEndian.PutUint64(buf[8:16], b.UserID)
+	binary.BigEndian.PutUint32(buf[16:20], b.AssetID)
+	binary.BigEndian.PutUint64(buf[20:28], b.Available)
+	binary.BigEndian.PutUint64(buf[28:36], b.Locked)
+	return buf, nil
 }
 
-// Deserialize реализует интерфейс Serializable
 func (b *Balance) Deserialize(data []byte) error {
 	if len(data) < 36 {
-		return fmt.Errorf("invalid balance data: expected at least 36 bytes, got %d", len(data))
+		return fmt.Errorf("balance: need 36 bytes, got %d", len(data))
 	}
-	
-	offset := 0
-	b.UserID = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
-	b.AssetID = binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-	b.Available = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
-	b.Locked = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
-	copy(b.key[:], data[offset:offset+8])
-	
+	copy(b.key[:], data[0:8])
+	b.UserID = binary.BigEndian.Uint64(data[8:16])
+	b.AssetID = binary.BigEndian.Uint32(data[16:20])
+	b.Available = binary.BigEndian.Uint64(data[20:28])
+	b.Locked = binary.BigEndian.Uint64(data[28:36])
 	return nil
 }
 
