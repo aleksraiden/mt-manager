@@ -6,8 +6,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"encoding/binary"
 
-	"github.com/vmihailenco/msgpack/v5"
+	//"github.com/vmihailenco/msgpack/v5"
 )
 
 // ============================================
@@ -156,6 +157,16 @@ func (sm *SnapshotManager) captureTreeReferences(mgr *UniversalManager) ([]*tree
 
 // serializeTreeLockFree сериализует дерево БЕЗ блокировок
 func (sm *SnapshotManager) serializeTreeLockFree(tree TreeInterface, name string) ([]byte, error) {
+	itemBytes, err := tree.serializeItems()
+    if err != nil {
+        return nil, err // уже содержит имя дерева и тип
+    }
+
+    // Кодируем [][]byte в один блоб для хранения:
+    // [count uint32][len0 uint32][data0...][len1 uint32][data1...]...
+    return encodeItemsBlob(itemBytes), nil
+	
+	/**
 	// Используем type-erased метод
 	items := tree.getAllItemsErased()
 
@@ -165,7 +176,7 @@ func (sm *SnapshotManager) serializeTreeLockFree(tree TreeInterface, name string
 		return nil, fmt.Errorf("failed to marshal tree %s: %w", name, err)
 	}
 
-	return data, nil
+	return data, nil **/
 }
 
 // serializeAllTreesParallel сериализует все деревья параллельно
@@ -289,7 +300,57 @@ func (sm *SnapshotManager) CreateSnapshotAsync(mgr *UniversalManager, opts *Snap
 
 // LoadSnapshot загружает снапшот
 // Если version == nil, загружает последний
-func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte) error {
+func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte, factory TreeFactory) error {
+	start := time.Now()
+
+    snapshot, err := sm.storage.LoadSnapshot(version)
+    if err != nil {
+        return err
+    }
+    if snapshot.SchemaVersion != CurrentSchemaVersion {
+        return fmt.Errorf("unsupported schema version: %d", snapshot.SchemaVersion)
+    }
+
+    newTrees := make(map[string]TreeInterface, len(snapshot.Trees))
+
+    for name, treeSnap := range snapshot.Trees {
+        tree := factory(name)
+        if tree == nil {
+            return fmt.Errorf("factory returned nil for unknown tree %q", name)
+        }
+        tree.SetName(name)
+		
+		if len(treeSnap.Items) == 0 {
+			// Пустое дерево — пропускаем, дерево уже создано пустым
+			newTrees[name] = tree
+			continue
+		}
+
+        // treeSnap.Items[0] — это наш блоб из encodeItemsBlob
+        itemBytes, err := decodeItemsBlob(treeSnap.Items[0])
+        if err != nil {
+            return fmt.Errorf("tree %q: failed to decode blob: %w", name, err)
+        }
+
+        if err := tree.deserializeAndInsert(itemBytes); err != nil {
+            return fmt.Errorf("tree %q: restore failed: %w", name, err)
+        }
+
+        newTrees[name] = tree
+    }
+
+    mgr.mu.Lock()
+    mgr.trees = newTrees
+    mgr.treeRootCache = make(map[string][32]byte)
+    mgr.globalRootDirty = true
+    mgr.mu.Unlock()
+
+    fmt.Printf("[INFO] Snapshot %x loaded in %v (%d trees)\n",
+        snapshot.Version[:4], time.Since(start), len(snapshot.Trees))
+
+    return nil	
+	
+/***	
 	start := time.Now()
 
 	// Загружаем из storage
@@ -325,6 +386,7 @@ func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte
 
 	// Возвращаем ошибку - эта функция требует рефакторинга для универсального менеджера
 	return fmt.Errorf("snapshot loading requires type information - use LoadTreeData[T] for each tree")
+***/
 }
 
 // ============================================
@@ -374,4 +436,47 @@ func (sm *SnapshotManager) Flush() error {
 // GetStorageStats возвращает статистику хранилища
 func (sm *SnapshotManager) GetStorageStats() StorageStats {
 	return sm.storage.GetStats()
+}
+
+//Storage helpers 
+// encodeItemsBlob упаковывает [][]byte в один []byte:
+// [N uint32] [len_0 uint32][bytes_0] ... [len_N-1 uint32][bytes_N-1]
+func encodeItemsBlob(items [][]byte) []byte {
+    totalSize := 4 // uint32 count
+    for _, item := range items {
+        totalSize += 4 + len(item)
+    }
+
+    buf := make([]byte, totalSize)
+    binary.BigEndian.PutUint32(buf[0:4], uint32(len(items)))
+    offset := 4
+    for _, item := range items {
+        binary.BigEndian.PutUint32(buf[offset:offset+4], uint32(len(item)))
+        offset += 4
+        copy(buf[offset:], item)
+        offset += len(item)
+    }
+    return buf
+}
+
+func decodeItemsBlob(data []byte) ([][]byte, error) {
+    if len(data) < 4 {
+        return nil, fmt.Errorf("blob too short")
+    }
+    count := binary.BigEndian.Uint32(data[0:4])
+    items := make([][]byte, 0, count)
+    offset := 4
+    for i := uint32(0); i < count; i++ {
+        if offset+4 > len(data) {
+            return nil, fmt.Errorf("blob truncated at item %d", i)
+        }
+        itemLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+        offset += 4
+        if offset+itemLen > len(data) {
+            return nil, fmt.Errorf("blob truncated at item %d data", i)
+        }
+        items = append(items, data[offset:offset+itemLen])
+        offset += itemLen
+    }
+    return items, nil
 }

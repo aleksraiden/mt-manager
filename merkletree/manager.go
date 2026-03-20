@@ -37,6 +37,10 @@ type TreeOptions struct {
 	KeyEncoding *KeyOrder
 }
 
+// TreeFactory - функция пользователя: имя дерева → пустое дерево нужного типа.
+// Вернуть nil если имя неизвестно — LoadFromSnapshot вернёт ошибку.
+type TreeFactory func(treeName string) TreeInterface
+
 // NewUniversalManager создает новый универсальный менеджер деревьев
 func NewUniversalManager(cfg *Config) *UniversalManager {
 	if cfg == nil {
@@ -633,12 +637,13 @@ func (m *UniversalManager) CreateSnapshotAsync() <-chan SnapshotResult {
 }
 
 // LoadFromSnapshot загружает снапшот
-func (m *UniversalManager) LoadFromSnapshot(version [32]byte) error {
+func (m *UniversalManager) LoadFromSnapshot(version [32]byte, factory TreeFactory) error {
 	if m.snapshotMgr == nil {
 		return fmt.Errorf("snapshot manager not initialized")
 	}
 
-	return m.snapshotMgr.LoadSnapshot(m, &version)
+	//return m.snapshotMgr.LoadSnapshot(m, &version)
+	return m.snapshotMgr.LoadSnapshot(m, &version, factory)
 }
 
 // GetSnapshotMetadata возвращает метаданные

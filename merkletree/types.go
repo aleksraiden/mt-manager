@@ -18,6 +18,15 @@ type Hashable interface {
 	ID() uint64
 }
 
+// Serializable - опциональный интерфейс для элементов дерева.
+// Если T реализует Serializable, снапшот будет использовать
+// эти методы вместо msgpack.
+// Если T НЕ реализует Serializable, сохранение снапшота вернёт ошибку.
+type Serializable interface {
+    Serialize() ([]byte, error)
+    Deserialize([]byte) error
+}
+
 type KeyOrder uint8
 
 const (

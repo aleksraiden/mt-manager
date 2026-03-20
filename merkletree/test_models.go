@@ -3,7 +3,8 @@ package merkletree
 import (
 	"crypto/rand"
 	"encoding/binary"
-
+	"fmt"
+	
 	"github.com/zeebo/blake3"
 )
 
@@ -44,6 +45,31 @@ func (a *Account) Hash() [32]byte {
 	var result [32]byte
 	copy(result[:], hasher.Sum(nil))
 	return result
+}
+
+// Serialize реализует Serializable для *Account
+// Layout: [PublicKey 32][UID 8][key 8][EmailHash 8][Status 1] = 57 bytes
+func (a *Account) Serialize() ([]byte, error) {
+	buf := make([]byte, 57)
+	copy(buf[0:32], a.PublicKey[:])
+	binary.BigEndian.PutUint64(buf[32:40], a.UID)
+	copy(buf[40:48], a.key[:])
+	binary.BigEndian.PutUint64(buf[48:56], a.EmailHash)
+	buf[56] = byte(a.Status)
+	return buf, nil
+}
+
+// Deserialize реализует Serializable для *Account
+func (a *Account) Deserialize(data []byte) error {
+	if len(data) < 57 {
+		return fmt.Errorf("account: need 57 bytes, got %d", len(data))
+	}
+	copy(a.PublicKey[:], data[0:32])
+	a.UID = binary.BigEndian.Uint64(data[32:40])
+	copy(a.key[:], data[40:48])
+	a.EmailHash = binary.BigEndian.Uint64(data[48:56])
+	a.Status = AccountStatus(data[56])
+	return nil
 }
 
 func NewAccount(uid uint64, status AccountStatus) *Account {
@@ -110,4 +136,29 @@ func NewBalance(userID uint64, assetID uint32, available, locked uint64) *Balanc
 	id := (userID << 32) | uint64(assetID)
 	binary.BigEndian.PutUint64(balance.key[:], id)
 	return balance
+}
+
+// Serialize реализует Serializable для *Balance
+// Layout: [key 8][UserID 8][AssetID 4][Available 8][Locked 8] = 36 bytes
+func (b *Balance) Serialize() ([]byte, error) {
+	buf := make([]byte, 36)
+	copy(buf[0:8], b.key[:])
+	binary.BigEndian.PutUint64(buf[8:16], b.UserID)
+	binary.BigEndian.PutUint32(buf[16:20], b.AssetID)
+	binary.BigEndian.PutUint64(buf[20:28], b.Available)
+	binary.BigEndian.PutUint64(buf[28:36], b.Locked)
+	return buf, nil
+}
+
+// Deserialize реализует Serializable для *Balance
+func (b *Balance) Deserialize(data []byte) error {
+	if len(data) < 36 {
+		return fmt.Errorf("balance: need 36 bytes, got %d", len(data))
+	}
+	copy(b.key[:], data[0:8])
+	b.UserID = binary.BigEndian.Uint64(data[8:16])
+	b.AssetID = binary.BigEndian.Uint32(data[16:20])
+	b.Available = binary.BigEndian.Uint64(data[20:28])
+	b.Locked = binary.BigEndian.Uint64(data[28:36])
+	return nil
 }
