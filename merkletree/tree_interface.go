@@ -3,6 +3,7 @@ package merkletree
 import (
 	"fmt"
 	"reflect"
+	"encoding/binary"
 )
 
 // TreeInterface - общий интерфейс для работы с деревьями любых типов
@@ -17,14 +18,17 @@ type TreeInterface interface {
 	Name() string
 	SetName(name string)
 	
-	// Методы для снапшотов (type-erased)
-	//getAllItemsErased() []interface{}
-	//insertBatchErased(items []interface{}) error
-	
 	// Для снапшотов - работают через интерфейс Serializable
     // Возвращает ошибку если T не реализует Serializable
     serializeItems() ([][]byte, error)
     deserializeAndInsert(items [][]byte) error
+	
+	// Новые методы для инкрементальных снапшотов
+    serializeDirtyItems() (upserted [][]byte, deletedKeys [][]byte, err error)
+    applyDelta(upserted [][]byte, deletedKeys [][]byte) error
+    resetDirtyTracking()
+    enableDirtyTracking()
+	isDirtyTrackingEnabled() bool
 }
 
 // TypedTree - обертка вокруг Tree[T], реализующая TreeInterface
@@ -58,31 +62,6 @@ func (t *TypedTree[T]) SetName(name string) {
 	t.Tree.name = name
 }
 
-/***
-// Type-erased методы для снапшотов
-func (t *TypedTree[T]) getAllItemsErased() []interface{} {
-	items := t.Tree.GetAllItems()
-	result := make([]interface{}, len(items))
-	for i, item := range items {
-		result[i] = item
-	}
-	return result
-}
-
-func (t *TypedTree[T]) insertBatchErased(items []interface{}) error {
-	typedItems := make([]T, len(items))
-	for i, item := range items {
-		typedItem, ok := item.(T)
-		if !ok {
-			return fmt.Errorf("invalid type in batch insert")
-		}
-		typedItems[i] = typedItem
-	}
-	t.Tree.InsertBatch(typedItems)
-	return nil
-}
-***/
-
 func (t *TypedTree[T]) serializeItems() ([][]byte, error) {
     items := t.Tree.GetAllItems()
     if len(items) == 0 {
@@ -111,6 +90,7 @@ func (t *TypedTree[T]) serializeItems() ([][]byte, error) {
     return result, nil
 }
 
+/**
 func (t *TypedTree[T]) deserializeAndInsert(items [][]byte) error {
     if len(items) == 0 {
         return nil
@@ -126,16 +106,7 @@ func (t *TypedTree[T]) deserializeAndInsert(items [][]byte) error {
     }
 
     batch := make([]T, 0, len(items))
-    /*
-	for i, data := range items {
-        // Десериализуем через pointer на zero value
-        var item T
-        if err := any(&item).(Serializable).Deserialize(data); err != nil {
-            return fmt.Errorf("tree %q: failed to deserialize item %d: %w",
-                t.Tree.name, i, err)
-        }
-        batch = append(batch, item)
-    }*/
+  
 	for i, data := range items {
         var item T
         // Для pointer types (T = *Foo): item == nil, нельзя вызывать методы напрямую.
@@ -154,4 +125,106 @@ func (t *TypedTree[T]) deserializeAndInsert(items [][]byte) error {
 
     t.Tree.InsertBatch(batch)
     return nil
+} **/
+
+func (t *TypedTree[T]) deserializeAndInsert(items [][]byte) error {
+    if len(items) == 0 {
+        return nil
+    }
+
+    // Проверяем Serializable через reflect — корректно для pointer types (T = *Foo)
+    var zero T
+    zeroType := reflect.TypeOf(zero)
+    if zeroType == nil {
+        return fmt.Errorf("tree %q: cannot determine type T", t.Tree.name)
+    }
+    if zeroType.Kind() != reflect.Ptr {
+        return fmt.Errorf("tree %q: T must be a pointer type, got %s", t.Tree.name, zeroType)
+    }
+    // Создаём тестовый экземпляр *Foo и проверяем интерфейс
+    if _, ok := reflect.New(zeroType.Elem()).Interface().(Serializable); !ok {
+        return fmt.Errorf("tree %q: type %T does not implement Serializable - "+
+            "add Serialize()/Deserialize() methods to enable snapshots",
+            t.Tree.name, zero)
+    }
+
+    batch := make([]T, 0, len(items))
+    for i, data := range items {
+        var item T
+        rv := reflect.New(reflect.TypeOf(item).Elem())
+        s := rv.Interface().(Serializable)
+        if err := s.Deserialize(data); err != nil {
+            return fmt.Errorf("tree %q: item %d: %w", t.Tree.name, i, err)
+        }
+        item = rv.Interface().(T)
+        batch = append(batch, item)
+    }
+
+    t.Tree.InsertBatch(batch)
+    return nil
 }
+
+func (t *TypedTree[T]) serializeDirtyItems() ([][]byte, [][]byte, error) {
+    t.Tree.dirtyMu.Lock()
+    // Копируем множества под локом, чтобы не блокировать надолго
+    dirtySnapshot := make(map[[8]byte]struct{}, len(t.Tree.dirtyKeys))
+    for k := range t.Tree.dirtyKeys {
+        dirtySnapshot[k] = struct{}{}
+    }
+    deletedSnapshot := make(map[[8]byte]struct{}, len(t.Tree.deletedKeys))
+    for k := range t.Tree.deletedKeys {
+        deletedSnapshot[k] = struct{}{}
+    }
+    t.Tree.dirtyMu.Unlock()
+
+    // Сериализуем dirty элементы
+    upserted := make([][]byte, 0, len(dirtySnapshot))
+    for key := range dirtySnapshot {
+        item, found := t.Tree.GetByKey(key) // нужен метод GetByKey в Tree
+        if !found {
+            continue
+        }
+        s, ok := any(item).(Serializable)
+        if !ok {
+            return nil, nil, fmt.Errorf("type %T does not implement Serializable", item)
+        }
+        data, err := s.Serialize()
+        if err != nil {
+            return nil, nil, err
+        }
+        upserted = append(upserted, data)
+    }
+
+    // Сериализуем удалённые ключи
+    deleted := make([][]byte, 0, len(deletedSnapshot))
+    for key := range deletedSnapshot {
+        k := key // копия
+        deleted = append(deleted, k[:])
+    }
+
+    return upserted, deleted, nil
+}
+
+func (t *TypedTree[T]) applyDelta(upserted [][]byte, deletedKeys [][]byte) error {
+    // Вставляем изменённые элементы
+    if err := t.deserializeAndInsert(upserted); err != nil {
+        return err
+    }
+    // Удаляем удалённые
+    for _, keyBytes := range deletedKeys {
+        if len(keyBytes) != 8 {
+            return fmt.Errorf("invalid key length: %d", len(keyBytes))
+        }
+        // Delete принимает uint64, конвертируем из [8]byte
+        id := binary.BigEndian.Uint64(keyBytes)
+        t.Tree.Delete(id)
+    }
+    return nil
+}
+
+func (t *TypedTree[T]) isDirtyTrackingEnabled() bool {
+    return t.Tree.isDirtyTrackingEnabled()
+}
+
+func (t *TypedTree[T]) resetDirtyTracking()  { t.Tree.ResetDirtyTracking() }
+func (t *TypedTree[T]) enableDirtyTracking() { t.Tree.EnableDirtyTracking() }

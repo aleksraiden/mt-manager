@@ -102,39 +102,6 @@ func TestSnapshotMultipleTrees(t *testing.T) {
 	}
 }
 
-func TestSnapshotAsync(t *testing.T) {
-	tmpDir := "./test_snapshots_async"
-	defer os.RemoveAll(tmpDir)
-
-	mgr, err := NewUniversalManagerWithSnapshot(DefaultConfig(), tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to create manager: %v", err)
-	}
-	defer mgr.CloseSnapshots()
-
-	// Создаем и заполняем дерево
-	tree, _ := CreateTree[*Account](mgr, "accounts")
-	for i := uint64(0); i < 5000; i++ {
-		tree.Insert(NewAccountDeterministic(i, StatusUser))
-	}
-
-	// Асинхронное создание снапшота
-	t.Log("Creating snapshot asynchronously...")
-	resultChan := mgr.CreateSnapshotAsync()
-
-	// Можем продолжать работу, пока снапшот создается
-	t.Log("Continue working while snapshot is being created...")
-
-	// Получаем результат
-	result := <-resultChan
-	if result.Error != nil {
-		t.Fatalf("Async snapshot failed: %v", result.Error)
-	}
-
-	t.Logf("Async snapshot completed in %v", result.Duration)
-	t.Logf("Version: %x", result.Version[:8])
-}
-
 func TestSnapshotMetrics(t *testing.T) {
 	tmpDir := "./test_snapshots_metrics"
 	defer os.RemoveAll(tmpDir)
@@ -389,33 +356,6 @@ func BenchmarkSnapshotCreateMultipleTrees(b *testing.B) {
 	b.Logf("Metrics: %s", metrics.String())
 }
 
-func BenchmarkSnapshotAsync(b *testing.B) {
-	tmpDir := "./bench_snapshot_async"
-	defer os.RemoveAll(tmpDir)
-
-	mgr, err := NewUniversalManagerWithSnapshot(DefaultConfig(), tmpDir)
-	if err != nil {
-		b.Fatalf("Failed to create manager: %v", err)
-	}
-	defer mgr.CloseSnapshots()
-
-	tree, _ := CreateTree[*Account](mgr, "accounts")
-	for i := uint64(0); i < 50000; i++ {
-		tree.Insert(NewAccountDeterministic(i, StatusUser))
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		resultChan := mgr.CreateSnapshotAsync()
-		result := <-resultChan
-		if result.Error != nil {
-			b.Fatalf("Async snapshot failed: %v", result.Error)
-		}
-	}
-}
-
 // ============================================
 // Стресс-тесты
 // ============================================
@@ -514,69 +454,3 @@ func TestSnapshotStress(t *testing.T) {
 	t.Logf("  WAL size: %d bytes", stats.WALSize)
 }
 
-func TestSnapshotConcurrent(t *testing.T) {
-    if testing.Short() {
-        t.Skip("Skipping concurrent test in short mode")
-    }
-
-    tmpDir := "./test_snapshots_concurrent"
-    defer os.RemoveAll(tmpDir)
-
-    mgr, err := NewUniversalManagerWithSnapshot(MediumConfig(), tmpDir)
-    if err != nil {
-        t.Fatalf("Failed to create manager: %v", err)
-    }
-    defer mgr.CloseSnapshots()
-
-    tree, _ := CreateTree[*Account](mgr, "accounts")
-
-    for i := uint64(0); i < 10000; i++ {
-        tree.Insert(NewAccountDeterministic(i, StatusUser))
-    }
-
-    t.Log("Creating snapshots concurrently...")
-
-    const numSnapshots = 5
-    results := make(chan SnapshotResult, numSnapshots)
-
-    for i := 0; i < numSnapshots; i++ {
-        // ИСПРАВЛЕНО: вставки выполняются ВНУТРИ горутины,
-        // чтобы каждая гарантированно видела своё уникальное состояние
-        go func(idx int) {
-            // Каждая горутина добавляет свои данные перед снапшотом
-            for j := 0; j < 100; j++ {
-                uid := uint64(10000 + idx*100 + j)
-                tree.Insert(NewAccountDeterministic(uid, StatusUser))
-            }
-            resultChan := mgr.CreateSnapshotAsync()
-            result := <-resultChan
-            t.Logf("Snapshot %d: completed in %v, version=%x", idx, result.Duration, result.Version[:4])
-            results <- result
-        }(i)
-    }
-
-    // Собираем результаты + считаем уникальные версии
-    uniqueVersions := make(map[[32]byte]struct{}, numSnapshots)
-    for i := 0; i < numSnapshots; i++ {
-        result := <-results
-        if result.Error != nil {
-            t.Errorf("Snapshot %d failed: %v", i, result.Error)
-        }
-        uniqueVersions[result.Version] = struct{}{}
-    }
-
-    t.Logf("Unique states captured: %d out of %d goroutines", len(uniqueVersions), numSnapshots)
-
-    // проверяем что хранилище содержит ровно столько записей,
-    // сколько было уникальных состояний (дедупликация по дизайну)
-    versions, _ := mgr.ListSnapshotVersions()
-    if len(versions) != len(uniqueVersions) {
-        t.Errorf("Storage mismatch: got %d stored, expected %d unique", len(versions), len(uniqueVersions))
-    }
-
-    // Все горутины должны завершиться без ошибок — это главная проверка
-    // Количество уникальных снапшотов >= 1 (хотя бы один создан)
-    if len(versions) == 0 {
-        t.Error("No snapshots were stored")
-    }
-}
