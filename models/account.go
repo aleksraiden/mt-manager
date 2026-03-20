@@ -75,7 +75,7 @@ func NewAccountFactory() *Account {
 }
 
 // Serialize реализует интерфейс Serializable
-func (a *Account) Serialize() []byte {
+func (a *Account) Serialize() ([]byte, error) {
 	buf := make([]byte, 32+8+8+8+1) // PublicKey + UID + key + EmailHash + Status
 	offset := 0
 	
@@ -98,7 +98,7 @@ func (a *Account) Serialize() []byte {
 	// Status (1 byte)
 	buf[offset] = byte(a.Status)
 	
-	return buf
+	return buf, nil
 }
 
 // Deserialize реализует интерфейс Serializable
