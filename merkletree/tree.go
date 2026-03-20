@@ -56,7 +56,7 @@ type Tree[T Hashable] struct {
     dirtyMu      sync.Mutex
     dirtyKeys    map[[8]byte]struct{} // ключи изменённых/добавленных элементов
     deletedKeys  map[[8]byte]struct{} // ключи удалённых элементов
-    trackDirty   bool                 // включён ли трекинг
+    trackDirty   atomic.Bool          // включён ли трекинг
 
     _padding1     [48]byte
     dirtyNodes    atomic.Uint64
@@ -112,7 +112,6 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		maxDepth: cfg.MaxDepth,
 		keyOrder: cfg.KeyEncoding,
 		items:	  NewShardedItemMap[T](),
-		trackDirty: cfg.TrackDirty,
 	}
 	
 	// СТАЛО: TopN > 0 всегда создаёт кеш, флаги уточняют режим
@@ -125,7 +124,8 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 	}
 	
 	if cfg.TrackDirty {
-        t.dirtyKeys   = make(map[[8]byte]struct{})
+        t.trackDirty.Store(true)
+		t.dirtyKeys   = make(map[[8]byte]struct{})
         t.deletedKeys = make(map[[8]byte]struct{})
     }
 		
@@ -154,21 +154,23 @@ func (t *Tree[T]) encodeID(id uint64) [8]byte {
     return KeyMSB(id)
 }
 
-// EnableDirtyTracking включает отслеживание изменений
 func (t *Tree[T]) EnableDirtyTracking() {
     t.dirtyMu.Lock()
     defer t.dirtyMu.Unlock()
-    t.trackDirty = true
-    t.dirtyKeys = make(map[[8]byte]struct{})
+    t.trackDirty.Store(true)  // ← atomic write
+    t.dirtyKeys   = make(map[[8]byte]struct{})
     t.deletedKeys = make(map[[8]byte]struct{})
 }
 
-// ResetDirtyTracking сбрасывает dirty set (вызывается после снапшота)
 func (t *Tree[T]) ResetDirtyTracking() {
     t.dirtyMu.Lock()
     defer t.dirtyMu.Unlock()
-    t.dirtyKeys = make(map[[8]byte]struct{})
+    t.dirtyKeys   = make(map[[8]byte]struct{})
     t.deletedKeys = make(map[[8]byte]struct{})
+}
+// isDirtyTrackingEnabled возвращает true если трекинг изменений включён
+func (t *Tree[T]) isDirtyTrackingEnabled() bool {
+    return t.trackDirty.Load() 
 }
 
 //Одиночная вставка с блокировкой 
@@ -190,7 +192,7 @@ func (t *Tree[T]) Insert(item T) error {
 	// Обновляем key index
     t.keyIndex.Store(item.Key(), item.ID())
 	
-	if t.trackDirty {
+	if t.trackDirty.Load() {
         t.dirtyMu.Lock()
         k := item.Key()
         t.dirtyKeys[k] = struct{}{}
@@ -252,7 +254,7 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
 		// Обновляем key index
 		t.keyIndex.Store(item.Key(), item.ID())
 		
-		if t.trackDirty {
+		if t.trackDirty.Load() {
 			t.dirtyMu.Lock()
 			k := item.Key()
 			t.dirtyKeys[k] = struct{}{}
@@ -291,7 +293,7 @@ func (t *Tree[T]) insertBatchSequential(items []T) []error {
 		// Обновляем key index
 		t.keyIndex.Store(item.Key(), item.ID())
 		
-		if t.trackDirty {
+		if t.trackDirty.Load() {
 			t.dirtyMu.Lock()
 			k := item.Key()
 			t.dirtyKeys[k] = struct{}{}
@@ -436,7 +438,7 @@ func (t *Tree[T]) insertBatchParallel(items []T) []error {
 					// Обновляем key index
 					t.keyIndex.Store(item.Key(), item.ID())
 					
-					if t.trackDirty {
+					if t.trackDirty.Load() {
 						t.dirtyMu.Lock()
 						k := item.Key()
 						t.dirtyKeys[k] = struct{}{}
@@ -578,7 +580,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
                     }
 					// Обновляем key index
 					t.keyIndex.Store(item.Key(), item.ID())					
-					if t.trackDirty {
+					if t.trackDirty.Load() {
 						t.dirtyMu.Lock()
 						k := item.Key()
 						t.dirtyKeys[k] = struct{}{}
@@ -1133,13 +1135,6 @@ func (t *Tree[T]) Clear() {
 	t.deletedNodeCount.Store(0)
 }
 
-// isDirtyTrackingEnabled возвращает true если трекинг изменений включён
-func (t *Tree[T]) isDirtyTrackingEnabled() bool {
-    t.dirtyMu.Lock()
-    defer t.dirtyMu.Unlock()
-    return t.trackDirty
-}
-
 //Удаление и пересборка дерева, чтобы GC мог очистить удаленные элементы 
 func (t *Tree[T]) Compact() {
     t.mu.Lock()
@@ -1255,7 +1250,7 @@ func (t *Tree[T]) Delete(id uint64) bool {
 	// Удаляем из key index
     t.keyIndex.Delete(item.Key())
 	
-	if t.trackDirty {
+	if t.trackDirty.Load() {
         key := item.Key()
 		t.dirtyMu.Lock()
         t.deletedKeys[key] = struct{}{}
@@ -1306,7 +1301,7 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 		// Удаляем из key index
 		t.keyIndex.Delete(item.Key())
 		
-		if t.trackDirty {
+		if t.trackDirty.Load() {
 			key := item.Key()
 			t.dirtyMu.Lock()
 			t.deletedKeys[key] = struct{}{}
