@@ -619,21 +619,16 @@ func (m *UniversalManager) CreateSnapshot() ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("snapshot manager not initialized")
 	}
 
-	return m.snapshotMgr.CreateSnapshot(m, DefaultSnapshotOptions())
+	return m.snapshotMgr.CreateSnapshot(m)
 }
 
-// CreateSnapshotAsync создает снапшот асинхронно
-func (m *UniversalManager) CreateSnapshotAsync() <-chan SnapshotResult {
-	if m.snapshotMgr == nil {
-		ch := make(chan SnapshotResult, 1)
-		ch <- SnapshotResult{Error: fmt.Errorf("snapshot manager not initialized")}
-		close(ch)
-		return ch
-	}
-
-	opts := DefaultSnapshotOptions()
-	opts.Async = true
-	return m.snapshotMgr.CreateSnapshotAsync(m, opts)
+// CreateCheckpoint создает полный снапшот принудительно,
+// независимо от настройки TrackDirty
+func (m *UniversalManager) CreateCheckpoint() ([32]byte, error) {
+    if m.snapshotMgr == nil {
+        return [32]byte{}, fmt.Errorf("snapshot manager not initialized")
+    }
+    return m.snapshotMgr.CreateCheckpoint(m)
 }
 
 // LoadFromSnapshot загружает снапшот
@@ -711,7 +706,7 @@ func (m *UniversalManager) FlushSnapshots() error {
 
 // CloseSnapshots закрывает snapshot manager
 func (m *UniversalManager) CloseSnapshots() error {
-	if m.snapshotMgr == nil {
+	if m == nil || m.snapshotMgr == nil {
 		return nil
 	}
 
@@ -721,4 +716,16 @@ func (m *UniversalManager) CloseSnapshots() error {
 // IsSnapshotEnabled проверяет доступность снапшотов
 func (m *UniversalManager) IsSnapshotEnabled() bool {
 	return m.snapshotMgr != nil
+}
+
+//Проверка 
+func (m *UniversalManager) allTreesTrackDirty() bool {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    for _, tree := range m.trees {
+        if !tree.isDirtyTrackingEnabled() {
+            return false
+        }
+    }
+    return true
 }

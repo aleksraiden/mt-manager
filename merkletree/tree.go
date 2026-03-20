@@ -51,11 +51,19 @@ type Tree[T Hashable] struct {
 
     topNCache     *TopNCache[T]
     name          string
+	
+	// Dirty tracking для инкрементальных снапшотов
+    dirtyMu      sync.Mutex
+    dirtyKeys    map[[8]byte]struct{} // ключи изменённых/добавленных элементов
+    deletedKeys  map[[8]byte]struct{} // ключи удалённых элементов
+    trackDirty   bool                 // включён ли трекинг
 
     _padding1     [48]byte
     dirtyNodes    atomic.Uint64
     cachedRoot    atomic.Value
     rootCacheValid atomic.Bool
+	
+	keyIndex 	sync.Map // [8]byte → uint64 (key → id)
 
     _padding2     [40]byte
     insertCount   atomic.Uint64
@@ -104,6 +112,7 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		maxDepth: cfg.MaxDepth,
 		keyOrder: cfg.KeyEncoding,
 		items:	  NewShardedItemMap[T](),
+		trackDirty: cfg.TrackDirty,
 	}
 	
 	// СТАЛО: TopN > 0 всегда создаёт кеш, флаги уточняют режим
@@ -114,6 +123,11 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 			t.topNCache = NewTopNCache[T](cfg.TopN, true)  // min-heap (дефолт)
 		}
 	}
+	
+	if cfg.TrackDirty {
+        t.dirtyKeys   = make(map[[8]byte]struct{})
+        t.deletedKeys = make(map[[8]byte]struct{})
+    }
 		
 	t.cachedRoot.Store([32]byte{}) // zero value
 	
@@ -140,6 +154,23 @@ func (t *Tree[T]) encodeID(id uint64) [8]byte {
     return KeyMSB(id)
 }
 
+// EnableDirtyTracking включает отслеживание изменений
+func (t *Tree[T]) EnableDirtyTracking() {
+    t.dirtyMu.Lock()
+    defer t.dirtyMu.Unlock()
+    t.trackDirty = true
+    t.dirtyKeys = make(map[[8]byte]struct{})
+    t.deletedKeys = make(map[[8]byte]struct{})
+}
+
+// ResetDirtyTracking сбрасывает dirty set (вызывается после снапшота)
+func (t *Tree[T]) ResetDirtyTracking() {
+    t.dirtyMu.Lock()
+    defer t.dirtyMu.Unlock()
+    t.dirtyKeys = make(map[[8]byte]struct{})
+    t.deletedKeys = make(map[[8]byte]struct{})
+}
+
 //Одиночная вставка с блокировкой 
 func (t *Tree[T]) Insert(item T) error {
     // Сначала пробуем дерево — если коллизия, maps не трогаем
@@ -154,6 +185,17 @@ func (t *Tree[T]) Insert(item T) error {
 
     if t.topNCache != nil {
         t.topNCache.TryInsert(item)
+    }
+	
+	// Обновляем key index
+    t.keyIndex.Store(item.Key(), item.ID())
+	
+	if t.trackDirty {
+        t.dirtyMu.Lock()
+        k := item.Key()
+        t.dirtyKeys[k] = struct{}{}
+        delete(t.deletedKeys, k) // если был удалён — отменяем
+        t.dirtyMu.Unlock()
     }
 
     t.insertCount.Add(1)
@@ -206,6 +248,18 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
         if t.topNCache != nil {
             t.topNCache.TryInsert(item)
         }
+		
+		// Обновляем key index
+		t.keyIndex.Store(item.Key(), item.ID())
+		
+		if t.trackDirty {
+			t.dirtyMu.Lock()
+			k := item.Key()
+			t.dirtyKeys[k] = struct{}{}
+			delete(t.deletedKeys, k) // если был удалён — отменяем
+			t.dirtyMu.Unlock()
+		}
+	
         successCount++
     }
 
@@ -232,6 +286,17 @@ func (t *Tree[T]) insertBatchSequential(items []T) []error {
 		
 		if t.topNCache != nil {
 			t.topNCache.TryInsert(item)
+		}
+		
+		// Обновляем key index
+		t.keyIndex.Store(item.Key(), item.ID())
+		
+		if t.trackDirty {
+			t.dirtyMu.Lock()
+			k := item.Key()
+			t.dirtyKeys[k] = struct{}{}
+			delete(t.deletedKeys, k) // если был удалён — отменяем
+			t.dirtyMu.Unlock()
 		}
 	}
 	
@@ -367,6 +432,18 @@ func (t *Tree[T]) insertBatchParallel(items []T) []error {
                     if t.topNCache != nil {
                         t.topNCache.TryInsert(item)
                     }
+					
+					// Обновляем key index
+					t.keyIndex.Store(item.Key(), item.ID())
+					
+					if t.trackDirty {
+						t.dirtyMu.Lock()
+						k := item.Key()
+						t.dirtyKeys[k] = struct{}{}
+						delete(t.deletedKeys, k) // если был удалён — отменяем
+						t.dirtyMu.Unlock()
+					}
+					
                     local++
                 }
             }
@@ -499,6 +576,15 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
                     if t.topNCache != nil {
                         t.topNCache.TryInsert(item)
                     }
+					// Обновляем key index
+					t.keyIndex.Store(item.Key(), item.ID())					
+					if t.trackDirty {
+						t.dirtyMu.Lock()
+						k := item.Key()
+						t.dirtyKeys[k] = struct{}{}
+						delete(t.deletedKeys, k) // если был удалён — отменяем
+						t.dirtyMu.Unlock()
+					}
                     local++
                 }
             }
@@ -1041,8 +1127,17 @@ func (t *Tree[T]) Clear() {
 		t.topNCache.Clear()
 	}
 	
+	t.ResetDirtyTracking()
+	
 	t.dirtyNodes.Store(0)
 	t.deletedNodeCount.Store(0)
+}
+
+// isDirtyTrackingEnabled возвращает true если трекинг изменений включён
+func (t *Tree[T]) isDirtyTrackingEnabled() bool {
+    t.dirtyMu.Lock()
+    defer t.dirtyMu.Unlock()
+    return t.trackDirty
 }
 
 //Удаление и пересборка дерева, чтобы GC мог очистить удаленные элементы 
@@ -1139,8 +1234,6 @@ func (t *Tree[T]) Delete(id uint64) bool {
 		return false
 	}
 	
-	//item := val.(T)
-	
 	// Удаляем из sync.Map
 	t.items.Delete(id)
 	t.itemCount.Add(^uint64(0)) // Декремент (атомарно вычитаем 1)
@@ -1159,7 +1252,28 @@ func (t *Tree[T]) Delete(id uint64) bool {
 	// Инвалидируем корневой хеш
 	t.rootCacheValid.Store(false)
 	
+	// Удаляем из key index
+    t.keyIndex.Delete(item.Key())
+	
+	if t.trackDirty {
+        key := item.Key()
+		t.dirtyMu.Lock()
+        t.deletedKeys[key] = struct{}{}
+        delete(t.dirtyKeys, key)
+        t.dirtyMu.Unlock()
+    }
+	
 	return true
+}
+
+// GetByKey возвращает элемент по его [8]byte ключу
+func (t *Tree[T]) GetByKey(key [8]byte) (T, bool) {
+    idVal, ok := t.keyIndex.Load(key)
+    if !ok {
+        var zero T
+        return zero, false
+    }
+    return t.items.Load(idVal.(uint64))
 }
 
 // DeleteBatch удаляет несколько элементов
@@ -1178,7 +1292,6 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 			continue
 		}
 		
-		//item := val.(T)
 		items = append(items, item)
 		
 		// Удаляем из maps
@@ -1188,6 +1301,17 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 		// Удаляем из TopN
 		if t.topNCache != nil {
 			t.topNCache.Remove(item)
+		}
+		
+		// Удаляем из key index
+		t.keyIndex.Delete(item.Key())
+		
+		if t.trackDirty {
+			key := item.Key()
+			t.dirtyMu.Lock()
+			t.deletedKeys[key] = struct{}{}
+			delete(t.dirtyKeys, key)
+			t.dirtyMu.Unlock()
 		}
 		
 		deleted++

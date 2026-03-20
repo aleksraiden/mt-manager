@@ -91,6 +91,10 @@ type SnapshotManager struct {
 	storage *SnapshotStorage
 	workers int
 
+	// Инкрементальные снапшоты
+    lastCheckpoint atomic.Pointer[[32]byte]  
+    lastVersion    atomic.Pointer[[32]byte] 
+
 	// Метрики (lock-free atomic)
 	captureTimeNs   atomic.Int64
 	serializeTimeNs atomic.Int64
@@ -232,6 +236,7 @@ func (sm *SnapshotManager) serializeAllTreesParallel(refs []*treeReference) (map
 // ФАЗА 3: Batch Write
 // ============================================
 
+/***
 // CreateSnapshot создает снапшот с минимальными блокировками
 func (sm *SnapshotManager) CreateSnapshot(mgr *UniversalManager, opts *SnapshotOptions) ([32]byte, error) {
 	if opts == nil {
@@ -272,26 +277,139 @@ func (sm *SnapshotManager) CreateSnapshot(mgr *UniversalManager, opts *SnapshotO
 	}
 
 	return version, nil
+} **/
+
+func (sm *SnapshotManager) CreateSnapshot(mgr *UniversalManager) ([32]byte, error) {
+    // Если хотя бы одно дерево не трекает dirty — делаем полный чекпоинт.
+    // Смешивать нельзя: инкрементальный снапшот должен быть либо для всех, либо ни для кого.
+    if !mgr.allTreesTrackDirty() {
+        return sm.CreateCheckpoint(mgr)
+    }
+
+    // Есть ли уже хотя бы один чекпоинт?
+    lastCP := sm.lastCheckpoint.Load()
+    if lastCP == nil {
+        // Первый раз — обязательно полный
+        return sm.CreateCheckpoint(mgr)
+    }
+
+    // Всё готово — делаем инкрементальный
+    return sm.createIncremental(mgr)
+}
+/***
+func (sm *SnapshotManager) CreateSnapshot(mgr *UniversalManager) ([32]byte, error) {
+    version := mgr.ComputeGlobalRoot()
+    
+    lastCP := sm.lastCheckpoint.Load()
+    if lastCP == nil {
+        // Нет чекпоинта — автоматически делаем полный
+        return sm.CreateCheckpoint(mgr)
+    }
+
+    mgr.mu.RLock()
+    deltas := make(map[string]*IncrementalTreeSnapshot, len(mgr.trees))
+    for name, tree := range mgr.trees {
+        upserted, deleted, err := tree.serializeDirtyItems()
+        if err != nil {
+            mgr.mu.RUnlock()
+            return [32]byte{}, fmt.Errorf("tree %q: %w", name, err)
+        }
+        deltas[name] = &IncrementalTreeSnapshot{
+            TreeID:      name,
+            RootHash:    tree.ComputeRoot(),
+            UpsertItems: upserted,
+            DeletedKeys: deleted,
+        }
+    }
+    mgr.mu.RUnlock()
+
+    parent := sm.lastSnapshotVersion()  // хеш предыдущего снапшота
+    if err := sm.storage.SaveIncremental(version, parent, *lastCP, time.Now().Unix(), deltas); err != nil {
+        return [32]byte{}, err
+    }
+
+    // Сбрасываем dirty только после успешной записи
+    mgr.mu.RLock()
+    for _, tree := range mgr.trees {
+        tree.resetDirtyTracking()
+    }
+    mgr.mu.RUnlock()
+
+    return version, nil
+}
+***/
+
+func (sm *SnapshotManager) CreateCheckpoint(mgr *UniversalManager) ([32]byte, error) {
+    refs, _ := sm.captureTreeReferences(mgr)
+    version := mgr.ComputeGlobalRoot()
+
+    serializedTrees, err := sm.serializeAllTreesParallel(refs)
+    if err != nil {
+        return [32]byte{}, err
+    }
+
+    // Получаем предыдущую версию как parent
+    parentVersion := [32]byte{}
+    if prev := sm.lastVersion.Load(); prev != nil {
+        parentVersion = *prev
+    }
+
+    //добавлен parentVersion
+    if err := sm.storage.SaveCheckpoint(version, parentVersion, time.Now().Unix(), serializedTrees); err != nil {
+        return [32]byte{}, err
+    }
+
+    mgr.mu.RLock()
+    for _, tree := range mgr.trees {
+        tree.resetDirtyTracking()
+    }
+    mgr.mu.RUnlock()
+
+    sm.lastCheckpoint.Store(&version)
+    sm.lastVersion.Store(&version)
+    return version, nil
 }
 
-// CreateSnapshotAsync создает снапшот асинхронно (fire-and-forget)
-// Возвращает канал для получения результата
-// БЛОКИРОВКА: 0µs (всё в фоне)
-func (sm *SnapshotManager) CreateSnapshotAsync(mgr *UniversalManager, opts *SnapshotOptions) <-chan SnapshotResult {
-	resultChan := make(chan SnapshotResult, 1)
+func (sm *SnapshotManager) createIncremental(mgr *UniversalManager) ([32]byte, error) {
+    version := mgr.ComputeGlobalRoot()
 
-	go func() {
-		defer close(resultChan)
-		start := time.Now()
-		version, err := sm.CreateSnapshot(mgr, opts)
-		resultChan <- SnapshotResult{
-			Version:  version,
-			Duration: time.Since(start),
-			Error:    err,
-		}
-	}()
+    lastCP := sm.lastCheckpoint.Load()  // гарантированно не nil — проверено в CreateSnapshot
 
-	return resultChan
+    parentVersion := [32]byte{}
+    if prev := sm.lastVersion.Load(); prev != nil {
+        parentVersion = *prev
+    }
+
+    mgr.mu.RLock()
+    deltas := make(map[string]*IncrementalTreeSnapshot, len(mgr.trees))
+    for name, tree := range mgr.trees {
+        upserted, deleted, err := tree.serializeDirtyItems()
+        if err != nil {
+            mgr.mu.RUnlock()
+            return [32]byte{}, fmt.Errorf("tree %q: %w", name, err)
+        }
+        deltas[name] = &IncrementalTreeSnapshot{
+            TreeID:      name,
+            RootHash:    tree.ComputeRoot(),
+            UpsertItems: upserted,
+            DeletedKeys: deleted,
+        }
+    }
+    mgr.mu.RUnlock()
+
+    if err := sm.storage.SaveIncremental(version, parentVersion, *lastCP, time.Now().Unix(), deltas); err != nil {
+        return [32]byte{}, err
+    }
+
+    // Сбрасываем dirty только после успешной записи
+    mgr.mu.RLock()
+    for _, tree := range mgr.trees {
+        tree.resetDirtyTracking()
+    }
+    mgr.mu.RUnlock()
+
+    sm.lastVersion.Store(&version)
+    return version, nil
 }
 
 // ============================================
@@ -300,6 +418,43 @@ func (sm *SnapshotManager) CreateSnapshotAsync(mgr *UniversalManager, opts *Snap
 
 // LoadSnapshot загружает снапшот
 // Если version == nil, загружает последний
+func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte, factory TreeFactory) error {
+    header, err := sm.storage.LoadHeader(version)
+    if err != nil {
+        return err
+    }
+
+    switch header.Kind {
+    case KindCheckpoint:
+        // Простая полная загрузка — как сейчас
+        return sm.loadCheckpoint(mgr, version, factory)
+
+    case KindIncremental:
+        // 1. Загружаем ближайший чекпоинт
+        if err := sm.loadCheckpoint(mgr, &header.CheckpointRef, factory); err != nil {
+            return fmt.Errorf("load base checkpoint %x: %w", header.CheckpointRef[:4], err)
+        }
+
+        // 2. Строим цепочку снапшотов от чекпоинта до target
+        chain, err := sm.storage.BuildChain(header.CheckpointRef, *version)
+        if err != nil {
+            return fmt.Errorf("build chain: %w", err)
+        }
+
+        // 3. Применяем дельты последовательно
+        for i, snap := range chain {
+            if err := sm.applyIncremental(mgr, snap); err != nil {
+                return fmt.Errorf("apply snapshot %d/%d (%x): %w",
+                    i+1, len(chain), snap.Version[:4], err)
+            }
+        }
+
+        return nil
+    }
+
+    return fmt.Errorf("unknown snapshot kind: %d", header.Kind)
+}
+/***
 func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte, factory TreeFactory) error {
 	start := time.Now()
 
@@ -387,6 +542,70 @@ func (sm *SnapshotManager) LoadSnapshot(mgr *UniversalManager, version *[32]byte
 	// Возвращаем ошибку - эта функция требует рефакторинга для универсального менеджера
 	return fmt.Errorf("snapshot loading requires type information - use LoadTreeData[T] for each tree")
 ***/
+//}
+
+func (sm *SnapshotManager) loadCheckpoint(mgr *UniversalManager, version *[32]byte, factory TreeFactory) error {
+    snapshot, err := sm.storage.LoadCheckpoint(version)
+    if err != nil {
+        return err
+    }
+
+    newTrees := make(map[string]TreeInterface, len(snapshot.Trees))
+    for name, treeSnap := range snapshot.Trees {
+        tree := factory(name)
+        if tree == nil {
+            return fmt.Errorf("factory returned nil for tree %q", name)
+        }
+        tree.SetName(name)
+
+        if len(treeSnap.Items) == 0 {
+            newTrees[name] = tree
+            continue
+        }
+
+        itemBytes, err := decodeItemsBlob(treeSnap.Items[0])
+        if err != nil {
+            return fmt.Errorf("tree %q: decode blob: %w", name, err)
+        }
+        if err := tree.deserializeAndInsert(itemBytes); err != nil {
+            return fmt.Errorf("tree %q: restore: %w", name, err)
+        }
+        newTrees[name] = tree
+    }
+
+    mgr.mu.Lock()
+    mgr.trees = newTrees
+    mgr.treeRootCache = make(map[string][32]byte)
+    mgr.globalRootDirty = true
+    mgr.mu.Unlock()
+
+    return nil
+}
+
+func (sm *SnapshotManager) applyIncremental(mgr *UniversalManager, entry ChainEntry) error {
+    deltas, err := sm.storage.LoadIncrementalDelta(entry.Version)
+    if err != nil {
+        return err
+    }
+
+    mgr.mu.Lock()
+    defer mgr.mu.Unlock()
+
+    for name, delta := range deltas {
+        tree, exists := mgr.trees[name]
+        if !exists {
+            // Дерево появилось в дельте, но не в менеджере — пропускаем
+            // (если нужно строгое поведение — возвращать ошибку)
+            continue
+        }
+        if err := tree.applyDelta(delta.UpsertItems, delta.DeletedKeys); err != nil {
+            return fmt.Errorf("tree %q apply delta: %w", name, err)
+        }
+        delete(mgr.treeRootCache, name)
+    }
+
+    mgr.globalRootDirty = true
+    return nil
 }
 
 // ============================================

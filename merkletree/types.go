@@ -52,6 +52,34 @@ func KeyLSB(v uint64) [8]byte {
     }
 }
 
+type SnapshotKind uint8
+
+const (
+    KindCheckpoint SnapshotKind = 1 // полный срез
+    KindIncremental SnapshotKind = 2 // только дельта
+)
+
+// SnapshotHeader — метаданные любого снапшота
+type SnapshotHeader struct {
+    Kind            SnapshotKind
+    Version         [32]byte  // хеш этого снапшота (GlobalRoot)
+    ParentVersion   [32]byte  // хеш предыдущего снапшота/чекпоинта
+    CheckpointRef   [32]byte  // хеш ближайшего чекпоинта (для быстрого поиска)
+    Timestamp       int64
+    SchemaVersion   int
+    TreeCount       int
+}
+
+// IncrementalTreeSnapshot — дельта одного дерева
+type IncrementalTreeSnapshot struct {
+    TreeID       string
+    RootHash     [32]byte
+    // Изменённые/добавленные элементы
+    UpsertItems  [][]byte
+    // Удалённые ключи (8 bytes each)
+    DeletedKeys  [][]byte
+}
+
 
 // Config содержит параметры конфигурации дерева
 type Config struct {
@@ -64,6 +92,10 @@ type Config struct {
 	TopN        int  // Для хранения топ-левел кеша
 	UseTopNMax 	bool
 	UseTopNMin 	bool
+	
+	// Включить отслеживание изменений для инкрементальных снапшотов.
+    // Если false — любой вызов CreateSnapshot() автоматически создаёт чекпоинт.
+	TrackDirty  bool
 }
 
 // DefaultConfig возвращает конфигурацию по умолчанию
@@ -75,6 +107,7 @@ func DefaultConfig() *Config {
 		TopN:        0,
 		UseTopNMax:	 false,
 		UseTopNMin:	 false,
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
@@ -84,6 +117,7 @@ func SmallConfig() *Config {
 		MaxDepth:    8,
 		CacheSize:   16_384, 	// 16K
 		CacheShards: 6,      	// 64 шарда
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
@@ -93,6 +127,7 @@ func MediumConfig() *Config {
 		MaxDepth:    8,
 		CacheSize:   131_072, 	// 128K
 		CacheShards: 8,       	// 256 шардов
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
@@ -102,6 +137,7 @@ func LargeConfig() *Config {
 		MaxDepth:    8,
 		CacheSize:   1_024_000, 	// 1M
 		CacheShards: 10,        // 1024 шарда
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
@@ -111,6 +147,7 @@ func HugeConfig() *Config {
 		MaxDepth:    8,
 		CacheSize:   1_024_000, 	 // 1M
 		CacheShards: 12,         // 4096 шардов
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
@@ -120,6 +157,7 @@ func NoCacheConfig() *Config {
 		MaxDepth:    8,
 		CacheSize:   0, // Без кеша
 		CacheShards: 0,
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
@@ -129,6 +167,7 @@ func CustomConfig(maxDepth int, cacheSize int, cacheShards uint) *Config {
 		MaxDepth:    maxDepth,
 		CacheSize:   cacheSize,
 		CacheShards: cacheShards,
+		TrackDirty:  false, // по умолчанию только чекпоинты
 	}
 }
 
