@@ -17,6 +17,7 @@ const (
 	StatusMM
 	StatusAlgo
 	StatusUser
+	StatusVIP
 )
 
 // Account для тестов
@@ -37,7 +38,9 @@ func (a *Account) Key() [8]byte {
 }
 
 func (a *Account) Hash() [32]byte {
-	hasher := blake3.New()
+	hasher := blake3HasherPool.Get().(*blake3.Hasher)
+	defer blake3HasherPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(a.key[:])
 	binary.Write(hasher, binary.BigEndian, a.EmailHash)
 	hasher.Write([]byte{byte(a.Status)})
@@ -115,7 +118,9 @@ func (b *Balance) Key() [8]byte {
 }
 
 func (b *Balance) Hash() [32]byte {
-	hasher := blake3.New()
+	hasher := blake3HasherPool.Get().(*blake3.Hasher)
+	defer blake3HasherPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(b.key[:])
 	binary.Write(hasher, binary.BigEndian, b.UserID)
 	binary.Write(hasher, binary.BigEndian, b.AssetID)

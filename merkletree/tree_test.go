@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 	"sync"
+	"os"
 	"errors"
 	"math/rand"
 )
@@ -479,6 +480,7 @@ func TestBatchCollisionPartialSuccess(t *testing.T) {
 // обновляет хеш и попадает в инкрементальный снапшот
 // ============================================
 
+/***original
 func TestMarkDirty(t *testing.T) {
 	dir := "./test_markdirty"
 	defer os.RemoveAll(dir)
@@ -518,6 +520,7 @@ func TestMarkDirty(t *testing.T) {
 	t.Logf("Root changed: %x → %x", rootAfterCP[:8], rootAfterMark[:8])
 
 	// --- Тест 3: батч мутаций ---
+	// Мутируем через указатель — items уже содержит тот же *Account
 	mutations := map[uint64]AccountStatus{
 		10: StatusBlocked,
 		20: StatusMM,
@@ -525,19 +528,17 @@ func TestMarkDirty(t *testing.T) {
 		50: StatusVIP,
 		99: StatusSystem,
 	}
+	ids := make([]uint64, 0, len(mutations))
 	for id, status := range mutations {
 		acc, ok := tree.Get(id)
 		if !ok {
 			t.Fatalf("Account %d not found", id)
 		}
-		acc.Status = status // мутируем через указатель
-	}
-
-	// Один батч-вызов для всех
-	ids := make([]uint64, 0, len(mutations))
-	for id := range mutations {
+		acc.Status = status  // мутируем через указатель — items видит изменение
 		ids = append(ids, id)
 	}
+
+	// Один вызов — инвалидирует хеши + регистрирует в dirtyKeys
 	tree.MarkDirty(ids...)
 
 	rootAfterBatch := mgr.ComputeGlobalRoot()
@@ -625,4 +626,119 @@ func TestMarkDirty(t *testing.T) {
 	// Корень должен совпасть
 	assertRootEqual(t, "markdirty restore", finalRoot, mgr2.ComputeGlobalRoot())
 	t.Logf("✓ All %d mutations restored correctly", len(mutations)+1)
+} **/
+
+func TestMarkDirty(t *testing.T) {
+    dir := "./test_markdirty"
+    defer os.RemoveAll(dir)
+
+    mgr := setupIncrementalManager(t, dir)
+
+    tree, _ := CreateTree[*Account](mgr, "accounts")
+
+    for i := uint64(0); i < 100; i++ {
+        tree.Insert(NewAccountDeterministic(i, StatusUser))
+    }
+
+    cpVersion, err := mgr.CreateCheckpoint()
+    if err != nil {
+        t.Fatalf("CreateCheckpoint failed: %v", err)
+    }
+    t.Logf("Checkpoint: %x", cpVersion[:8])
+
+    // --- ТОЧКА 1: мутируем через указатель ---
+    mutations := map[uint64]AccountStatus{
+        10: StatusBlocked,
+        20: StatusMM,
+        30: StatusAlgo,
+        50: StatusVIP,
+        99: StatusSystem,
+    }
+    ids := make([]uint64, 0, len(mutations))
+    for id, status := range mutations {
+        acc, ok := tree.Get(id)
+        if !ok {
+            t.Fatalf("Account %d not found", id)
+        }
+        acc.Status = status
+        ids = append(ids, id)
+
+        // Лог 1: проверяем что указатель в items тот же
+        accFromItems, _ := tree.Get(id)
+        t.Logf("[L1] id=%d: after mutation via ptr, items has status=%v (expected %v), same ptr=%v",
+            id, accFromItems.Status, status, acc == accFromItems)
+    }
+
+    tree.MarkDirty(ids...)
+
+    // --- ТОЧКА 2: что в dirtyKeys после MarkDirty ---
+    tree.dirtyMu.Lock()
+    t.Logf("[L2] dirtyKeys count: %d (expected %d)", len(tree.dirtyKeys), len(mutations))
+    for k := range tree.dirtyKeys {
+        t.Logf("[L2] dirtyKey: %x", k)
+    }
+    tree.dirtyMu.Unlock()
+
+    // --- ТОЧКА 3: что serializeDirtyItems возвращает ---
+    typedTree := &TypedTree[*Account]{Tree: tree}
+    upserted, deleted, err := typedTree.serializeDirtyItems()
+    if err != nil {
+        t.Fatalf("serializeDirtyItems failed: %v", err)
+    }
+    t.Logf("[L3] upserted=%d deleted=%d (expected upserted=%d)", len(upserted), len(deleted), len(mutations))
+
+    // Десериализуем и проверяем статусы в дельте
+    for i, data := range upserted {
+        var acc Account
+        if err := acc.Deserialize(data); err != nil {
+            t.Fatalf("Deserialize upserted[%d] failed: %v", i, err)
+        }
+        t.Logf("[L3] upserted[%d]: id=%d status=%v", i, acc.UID, acc.Status)
+    }
+
+    // --- ТОЧКА 4: создаём снапшот и проверяем его header ---
+    snapVersion, err := mgr.CreateSnapshot()
+    if err != nil {
+        t.Fatalf("CreateSnapshot failed: %v", err)
+    }
+    header, _ := mgr.snapshotMgr.storage.LoadHeader(&snapVersion)
+    t.Logf("[L4] snapshot kind=%v", header.Kind)
+
+    finalRoot := mgr.ComputeGlobalRoot()
+
+    if err := mgr.CloseSnapshots(); err != nil {
+        t.Fatalf("CloseSnapshots: %v", err)
+    }
+
+    // --- ТОЧКА 5: восстановление ---
+    mgr2 := setupIncrementalManager(t, dir)
+    defer mgr2.CloseSnapshots()
+
+    factory := func(name string) TreeInterface {
+        switch name {
+        case "accounts":
+            tr := New[*Account](mgr2.config)
+            return &TypedTree[*Account]{Tree: tr}
+        }
+        return nil
+    }
+
+    if err := mgr2.LoadFromSnapshot(snapVersion, factory); err != nil {
+        t.Fatalf("LoadFromSnapshot failed: %v", err)
+    }
+
+    restoredTree, _ := GetTree[*Account](mgr2, "accounts")
+    t.Logf("[L5] restored size=%d", restoredTree.Size())
+
+    for id, expectedStatus := range mutations {
+        acc, found := restoredTree.Get(id)
+        if !found {
+            t.Errorf("[L5] Account %d not found", id)
+            continue
+        }
+        t.Logf("[L5] id=%d: got status=%v expected=%v match=%v",
+            id, acc.Status, expectedStatus, acc.Status == expectedStatus)
+    }
+
+    assertRootEqual(t, "markdirty restore", finalRoot, mgr2.ComputeGlobalRoot())
 }

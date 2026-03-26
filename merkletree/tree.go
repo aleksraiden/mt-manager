@@ -157,7 +157,15 @@ func (t *Tree[T]) encodeID(id uint64) [8]byte {
 func (t *Tree[T]) EnableDirtyTracking() {
     t.dirtyMu.Lock()
     defer t.dirtyMu.Unlock()
-    t.trackDirty.Store(true)  // ← atomic write
+    t.trackDirty.Store(true) 
+    t.dirtyKeys   = make(map[[8]byte]struct{})
+    t.deletedKeys = make(map[[8]byte]struct{})
+}
+
+func (t *Tree[T]) DisableDirtyTracking() {
+    t.dirtyMu.Lock()
+    defer t.dirtyMu.Unlock()
+    t.trackDirty.Store(false) 
     t.dirtyKeys   = make(map[[8]byte]struct{})
     t.deletedKeys = make(map[[8]byte]struct{})
 }
@@ -174,18 +182,21 @@ func (t *Tree[T]) isDirtyTrackingEnabled() bool {
     return t.trackDirty.Load() 
 }
 
+//Вручную пометить узлы, которые нужно обновлялись напрямую 
 func (t *Tree[T]) MarkDirty(ids ...uint64) {
     for _, id := range ids {
-        if _, exists := t.items.Load(id); !exists {
+        item, exists := t.items.Load(id)
+        if !exists {
             continue
         }
+
+        // Инвалидируем хеш узла
         if node := t.findLeaf(t.root, id, 0); node != nil {
             node.dirty.Store(true)
         }
 
-        // Помечаем в dirty tracking для инкрементальных снапшотов
+        // Добавляем в dirtyKeys для инкрементальных снапшотов
         if t.trackDirty.Load() {
-            item, _ := t.items.Load(id)
             key := item.Key()
             t.dirtyMu.Lock()
             t.dirtyKeys[key] = struct{}{}
@@ -200,21 +211,34 @@ func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
     if node == nil {
         return nil
     }
+
     node.mu.RLock()
-    defer node.mu.RUnlock()
 
     if node.IsLeaf {
-        if node.Value.ID() == id {
+        match := node.Value.ID() == id
+        node.mu.RUnlock()
+        if match {
             return node
         }
         return nil
     }
 
-    key := EncodeKey(id)
-    if depth >= len(key) {
+    nkey := t.normalizeKey(t.encodeID(id))
+    if depth >= len(nkey) {
+        node.mu.RUnlock()
         return nil
     }
-    child := node.Children[key[depth]]
+
+    idx := nkey[depth]
+    var child *Node[T]
+    for i, k := range node.Keys {
+        if k == idx {
+            child = node.Children[i]
+            break
+        }
+    }
+    node.mu.RUnlock()
+
     return t.findLeaf(child, id, depth+1)
 }
 
