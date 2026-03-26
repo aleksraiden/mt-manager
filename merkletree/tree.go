@@ -168,9 +168,54 @@ func (t *Tree[T]) ResetDirtyTracking() {
     t.dirtyKeys   = make(map[[8]byte]struct{})
     t.deletedKeys = make(map[[8]byte]struct{})
 }
+
 // isDirtyTrackingEnabled возвращает true если трекинг изменений включён
 func (t *Tree[T]) isDirtyTrackingEnabled() bool {
     return t.trackDirty.Load() 
+}
+
+func (t *Tree[T]) MarkDirty(ids ...uint64) {
+    for _, id := range ids {
+        if _, exists := t.items.Load(id); !exists {
+            continue
+        }
+        if node := t.findLeaf(t.root, id, 0); node != nil {
+            node.dirty.Store(true)
+        }
+
+        // Помечаем в dirty tracking для инкрементальных снапшотов
+        if t.trackDirty.Load() {
+            item, _ := t.items.Load(id)
+            key := item.Key()
+            t.dirtyMu.Lock()
+            t.dirtyKeys[key] = struct{}{}
+            t.dirtyMu.Unlock()
+        }
+    }
+    t.rootCacheValid.Store(false)
+}
+
+// findLeaf — поиск листа по ID
+func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
+    if node == nil {
+        return nil
+    }
+    node.mu.RLock()
+    defer node.mu.RUnlock()
+
+    if node.IsLeaf {
+        if node.Value.ID() == id {
+            return node
+        }
+        return nil
+    }
+
+    key := EncodeKey(id)
+    if depth >= len(key) {
+        return nil
+    }
+    child := node.Children[key[depth]]
+    return t.findLeaf(child, id, depth+1)
 }
 
 //Одиночная вставка с блокировкой 

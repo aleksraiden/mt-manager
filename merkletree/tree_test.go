@@ -472,3 +472,157 @@ func TestBatchCollisionPartialSuccess(t *testing.T) {
         t.Error("ID=257 не должен быть в дереве после коллизии")
     }
 }
+
+// ============================================
+// TestMarkDirty
+// Проверяет: мутация через указатель + MarkDirty корректно
+// обновляет хеш и попадает в инкрементальный снапшот
+// ============================================
+
+func TestMarkDirty(t *testing.T) {
+	dir := "./test_markdirty"
+	defer os.RemoveAll(dir)
+
+	mgr := setupIncrementalManager(t, dir)
+
+	tree, _ := CreateTree[*Account](mgr, "accounts")
+
+	// Базовое заполнение
+	for i := uint64(0); i < 100; i++ {
+		tree.Insert(NewAccountDeterministic(i, StatusUser))
+	}
+
+	// Чекпоинт
+	cpVersion, err := mgr.CreateCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateCheckpoint failed: %v", err)
+	}
+	t.Logf("Checkpoint: %x", cpVersion[:8])
+
+	rootAfterCP := mgr.ComputeGlobalRoot()
+
+	// --- Тест 1: хеш не меняется без MarkDirty ---
+	acc0, _ := tree.Get(0)
+	acc0.Status = StatusBlocked // мутируем через указатель
+	rootNoMark := mgr.ComputeGlobalRoot()
+	if rootAfterCP != rootNoMark {
+		t.Error("Root should NOT change without MarkDirty")
+	}
+
+	// --- Тест 2: хеш меняется после MarkDirty ---
+	tree.MarkDirty(0)
+	rootAfterMark := mgr.ComputeGlobalRoot()
+	if rootAfterCP == rootAfterMark {
+		t.Error("Root SHOULD change after MarkDirty")
+	}
+	t.Logf("Root changed: %x → %x", rootAfterCP[:8], rootAfterMark[:8])
+
+	// --- Тест 3: батч мутаций ---
+	mutations := map[uint64]AccountStatus{
+		10: StatusBlocked,
+		20: StatusMM,
+		30: StatusAlgo,
+		50: StatusVIP,
+		99: StatusSystem,
+	}
+	for id, status := range mutations {
+		acc, ok := tree.Get(id)
+		if !ok {
+			t.Fatalf("Account %d not found", id)
+		}
+		acc.Status = status // мутируем через указатель
+	}
+
+	// Один батч-вызов для всех
+	ids := make([]uint64, 0, len(mutations))
+	for id := range mutations {
+		ids = append(ids, id)
+	}
+	tree.MarkDirty(ids...)
+
+	rootAfterBatch := mgr.ComputeGlobalRoot()
+	if rootAfterMark == rootAfterBatch {
+		t.Error("Root SHOULD change after batch MarkDirty")
+	}
+	t.Logf("Batch MarkDirty(%d items): %x → %x", len(ids), rootAfterMark[:8], rootAfterBatch[:8])
+
+	// --- Тест 4: несуществующий ID не паникует и не меняет корень ---
+	rootBeforeInvalid := mgr.ComputeGlobalRoot()
+	tree.MarkDirty(99999, 88888)
+	rootAfterInvalid := mgr.ComputeGlobalRoot()
+	if rootBeforeInvalid != rootAfterInvalid {
+		t.Error("Root should NOT change for non-existent IDs")
+	}
+
+	// --- Тест 5: мутации попадают в инкрементальный снапшот ---
+	snapVersion, err := mgr.CreateSnapshot()
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	t.Logf("Incremental snapshot: %x", snapVersion[:8])
+
+	// Проверяем что это инкрементальный, а не чекпоинт
+	header, err := mgr.snapshotMgr.storage.LoadHeader(&snapVersion)
+	if err != nil {
+		t.Fatalf("LoadHeader failed: %v", err)
+	}
+	if header.Kind != KindIncremental {
+		t.Errorf("Expected KindIncremental, got %v", header.Kind)
+	}
+
+	finalRoot := mgr.ComputeGlobalRoot()
+
+	// Закрываем перед восстановлением
+	if err := mgr.CloseSnapshots(); err != nil {
+		t.Fatalf("CloseSnapshots: %v", err)
+	}
+
+	// --- Тест 6: восстановление — все мутации на месте ---
+	mgr2 := setupIncrementalManager(t, dir)
+	defer mgr2.CloseSnapshots()
+
+	factory := func(name string) TreeInterface {
+		switch name {
+		case "accounts":
+			tr := New[*Account](mgr2.config)
+			return &TypedTree[*Account]{Tree: tr}
+		}
+		return nil
+	}
+
+	if err := mgr2.LoadFromSnapshot(snapVersion, factory); err != nil {
+		t.Fatalf("LoadFromSnapshot failed: %v", err)
+	}
+
+	restoredTree, ok := GetTree[*Account](mgr2, "accounts")
+	if !ok {
+		t.Fatal("Tree 'accounts' not found after restore")
+	}
+
+	if restoredTree.Size() != 100 {
+		t.Errorf("Expected 100 items, got %d", restoredTree.Size())
+	}
+
+	// Проверяем каждую мутацию
+	for id, expectedStatus := range mutations {
+		acc, found := restoredTree.Get(id)
+		if !found {
+			t.Errorf("Account %d not found after restore", id)
+			continue
+		}
+		if acc.Status != expectedStatus {
+			t.Errorf("Account %d: expected status %v, got %v",
+				id, expectedStatus, acc.Status)
+		}
+	}
+
+	// Проверяем acc0 (StatusBlocked, id=0)
+	acc0restored, _ := restoredTree.Get(0)
+	if acc0restored.Status != StatusBlocked {
+		t.Errorf("Account 0: expected StatusBlocked, got %v", acc0restored.Status)
+	}
+
+	// Корень должен совпасть
+	assertRootEqual(t, "markdirty restore", finalRoot, mgr2.ComputeGlobalRoot())
+	t.Logf("✓ All %d mutations restored correctly", len(mutations)+1)
+}
