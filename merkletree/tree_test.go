@@ -6,6 +6,7 @@ import (
 	"time"
 	"sync"
 	"os"
+	"sort"
 	"errors"
 	"math/rand"
 )
@@ -150,89 +151,6 @@ func TestTreeStats(t *testing.T) {
 	}
 }
 
-// Бенчмарки
-func BenchmarkTreeInsert(b *testing.B) {
-	tree := New[*Account](DefaultConfig())
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		acc := NewAccount(uint64(i), StatusUser)
-		if err := tree.Insert(acc); err != nil {
-			b.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
-		}
-	}
-}
-
-func BenchmarkTreeInsertBatch(b *testing.B) {
-	tree := New[*Account](DefaultConfig())
-	batchSize := 1000
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		accounts := make([]*Account, batchSize)
-		for j := range accounts {
-			accounts[j] = NewAccount(uint64(i*batchSize+j), StatusUser)
-		}
-		b.StartTimer()
-
-		tree.InsertBatch(accounts)
-	}
-}
-
-func BenchmarkTreeGet(b *testing.B) {
-	tree := New[*Account](DefaultConfig())
-
-	// Подготовка данных
-	for i := uint64(0); i < 1000000; i++ {
-		acc := NewAccount(i, StatusUser)
-		if err := tree.Insert(acc); err != nil {
-			b.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
-		}
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		tree.Get(uint64(i % 1000000))
-	}
-}
-
-func BenchmarkTreeGetCached(b *testing.B) {
-	tree := New[*Account](DefaultConfig())
-
-	// Подготовка данных
-	for i := uint64(0); i < 1000; i++ {
-		tree.Insert(NewAccount(i, StatusUser))
-	}
-
-	// Прогреваем кеш
-	for i := uint64(0); i < 100; i++ {
-		tree.Get(i)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		tree.Get(uint64(i % 100))
-	}
-}
-
-func BenchmarkTreeComputeRoot(b *testing.B) {
-	tree := New[*Account](DefaultConfig())
-
-	// Подготовка данных
-	for i := uint64(0); i < 10000; i++ {
-		acc := NewAccount(i, StatusUser)
-		if err := tree.Insert(acc); err != nil {
-			b.Fatalf("unexpected collision on insert ID=%d: %v", acc.UID, err)
-		}
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		tree.ComputeRoot()
-	}
-}
-
 // Интеграционный тест
 func TestLargeScalePerformance(t *testing.T) {
 	if testing.Short() {
@@ -312,30 +230,6 @@ func TestTreeConcurrentGetAndRoot(t *testing.T) {
 	}
 
 	wg.Wait()
-}
-
-func BenchmarkConcurrentGetAndRootHighContention(b *testing.B) {
-    tree := New[*Account](DefaultConfig())
-    // Заполняем большим количеством элементов
-    for i := uint64(0); i < 500_000; i++ {
-        tree.Insert(NewAccount(i, StatusUser))
-    }
-
-    b.ResetTimer()
-    b.ReportAllocs()
-
-    b.RunParallel(func(pb *testing.PB) {
-        rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(b.N)))
-        for pb.Next() {
-            uid := uint64(rng.Intn(500_000))
-            _, _ = tree.Get(uid)
-
-            // 1% шанс вызвать ComputeRoot (симулируем CometBFT finality)
-            if rng.Intn(100) == 0 {
-                _ = tree.ComputeRoot()
-            }
-        }
-    })
 }
 
 func TestRootChangesAfterMutation(t *testing.T) {
@@ -479,8 +373,6 @@ func TestBatchCollisionPartialSuccess(t *testing.T) {
 // Проверяет: мутация через указатель + MarkDirty корректно
 // обновляет хеш и попадает в инкрементальный снапшот
 // ============================================
-
-/***original
 func TestMarkDirty(t *testing.T) {
 	dir := "./test_markdirty"
 	defer os.RemoveAll(dir)
@@ -626,119 +518,342 @@ func TestMarkDirty(t *testing.T) {
 	// Корень должен совпасть
 	assertRootEqual(t, "markdirty restore", finalRoot, mgr2.ComputeGlobalRoot())
 	t.Logf("✓ All %d mutations restored correctly", len(mutations)+1)
-} **/
+} 
 
-func TestMarkDirty(t *testing.T) {
-    dir := "./test_markdirty"
-    defer os.RemoveAll(dir)
+func TestMarkDirtyPathInvalidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TrackDirty = true
 
-    mgr := setupIncrementalManager(t, dir)
+	tree := New[*Account](cfg)
 
-    tree, _ := CreateTree[*Account](mgr, "accounts")
+	for i := uint64(0); i < 100; i++ {
+		if err := tree.Insert(NewAccountDeterministic(i, StatusUser)); err != nil {
+			t.Fatalf("insert %d failed: %v", i, err)
+		}
+	}
 
-    for i := uint64(0); i < 100; i++ {
-        tree.Insert(NewAccountDeterministic(i, StatusUser))
-    }
+	rootBefore := tree.ComputeRoot()
+	if tree.GetDirtyNodeCount() != 0 {
+		t.Fatalf("expected dirtyNodes=0 after initial ComputeRoot, got %d", tree.GetDirtyNodeCount())
+	}
 
-    cpVersion, err := mgr.CreateCheckpoint()
-    if err != nil {
-        t.Fatalf("CreateCheckpoint failed: %v", err)
-    }
-    t.Logf("Checkpoint: %x", cpVersion[:8])
+	acc, ok := tree.Get(20)
+	if !ok {
+		t.Fatal("account 20 not found")
+	}
 
-    // --- ТОЧКА 1: мутируем через указатель ---
-    mutations := map[uint64]AccountStatus{
-        10: StatusBlocked,
-        20: StatusMM,
-        30: StatusAlgo,
-        50: StatusVIP,
-        99: StatusSystem,
-    }
-    ids := make([]uint64, 0, len(mutations))
-    for id, status := range mutations {
-        acc, ok := tree.Get(id)
-        if !ok {
-            t.Fatalf("Account %d not found", id)
-        }
-        acc.Status = status
-        ids = append(ids, id)
+	oldStatus := acc.Status
+	acc.Status = StatusMM
 
-        // Лог 1: проверяем что указатель в items тот же
-        accFromItems, _ := tree.Get(id)
-        t.Logf("[L1] id=%d: after mutation via ptr, items has status=%v (expected %v), same ptr=%v",
-            id, accFromItems.Status, status, acc == accFromItems)
-    }
+	rootAfterPtrMutation := tree.ComputeRoot()
+	if rootBefore != rootAfterPtrMutation {
+		t.Fatalf(
+			"root changed without MarkDirty: before=%x afterPtr=%x",
+			rootBefore[:8],
+			rootAfterPtrMutation[:8],
+		)
+	}
 
-    tree.MarkDirty(ids...)
+	if tree.GetDirtyNodeCount() != 0 {
+		t.Fatalf("expected dirtyNodes=0 before MarkDirty, got %d", tree.GetDirtyNodeCount())
+	}
 
-    // --- ТОЧКА 2: что в dirtyKeys после MarkDirty ---
-    tree.dirtyMu.Lock()
-    t.Logf("[L2] dirtyKeys count: %d (expected %d)", len(tree.dirtyKeys), len(mutations))
-    for k := range tree.dirtyKeys {
-        t.Logf("[L2] dirtyKey: %x", k)
-    }
-    tree.dirtyMu.Unlock()
+	tree.MarkDirty(20)
 
-    // --- ТОЧКА 3: что serializeDirtyItems возвращает ---
-    typedTree := &TypedTree[*Account]{Tree: tree}
-    upserted, deleted, err := typedTree.serializeDirtyItems()
-    if err != nil {
-        t.Fatalf("serializeDirtyItems failed: %v", err)
-    }
-    t.Logf("[L3] upserted=%d deleted=%d (expected upserted=%d)", len(upserted), len(deleted), len(mutations))
+	if tree.GetDirtyNodeCount() == 0 {
+		t.Fatalf("expected dirtyNodes > 0 after MarkDirty, got %d", tree.GetDirtyNodeCount())
+	}
 
-    // Десериализуем и проверяем статусы в дельте
-    for i, data := range upserted {
-        var acc Account
-        if err := acc.Deserialize(data); err != nil {
-            t.Fatalf("Deserialize upserted[%d] failed: %v", i, err)
-        }
-        t.Logf("[L3] upserted[%d]: id=%d status=%v", i, acc.UID, acc.Status)
-    }
+	tree.dirtyMu.Lock()
+	_, dirtyTracked := tree.dirtyKeys[acc.Key()]
+	deletedTracked := len(tree.deletedKeys)
+	dirtyCount := len(tree.dirtyKeys)
+	tree.dirtyMu.Unlock()
 
-    // --- ТОЧКА 4: создаём снапшот и проверяем его header ---
-    snapVersion, err := mgr.CreateSnapshot()
-    if err != nil {
-        t.Fatalf("CreateSnapshot failed: %v", err)
-    }
-    header, _ := mgr.snapshotMgr.storage.LoadHeader(&snapVersion)
-    t.Logf("[L4] snapshot kind=%v", header.Kind)
+	if !dirtyTracked {
+		t.Fatalf("expected key %x to be present in dirtyKeys", acc.Key())
+	}
 
-    finalRoot := mgr.ComputeGlobalRoot()
+	if deletedTracked != 0 {
+		t.Fatalf("expected deletedKeys to stay empty, got %d", deletedTracked)
+	}
 
-    if err := mgr.CloseSnapshots(); err != nil {
-        t.Fatalf("CloseSnapshots: %v", err)
-    }
+	rootAfterMarkDirty := tree.ComputeRoot()
+	if rootBefore == rootAfterMarkDirty {
+		t.Fatalf(
+			"root did not change after MarkDirty: before=%x afterMark=%x",
+			rootBefore[:8],
+			rootAfterMarkDirty[:8],
+		)
+	}
 
-    // --- ТОЧКА 5: восстановление ---
-    mgr2 := setupIncrementalManager(t, dir)
-    defer mgr2.CloseSnapshots()
+	if tree.GetDirtyNodeCount() != 0 {
+		t.Fatalf("expected dirtyNodes=0 after recompute, got %d", tree.GetDirtyNodeCount())
+	}
 
-    factory := func(name string) TreeInterface {
-        switch name {
-        case "accounts":
-            tr := New[*Account](mgr2.config)
-            return &TypedTree[*Account]{Tree: tr}
-        }
-        return nil
-    }
+	acc2, ok := tree.Get(20)
+	if !ok {
+		t.Fatal("account 20 not found after recompute")
+	}
 
-    if err := mgr2.LoadFromSnapshot(snapVersion, factory); err != nil {
-        t.Fatalf("LoadFromSnapshot failed: %v", err)
-    }
+	if acc2.Status != StatusMM {
+		t.Fatalf("expected status=%v after recompute, got %v", StatusMM, acc2.Status)
+	}
 
-    restoredTree, _ := GetTree[*Account](mgr2, "accounts")
-    t.Logf("[L5] restored size=%d", restoredTree.Size())
+	t.Logf(
+		"path invalidation ok: id=%d status %v -> %v dirtyKeys=%d root %x -> %x",
+		acc2.UID,
+		oldStatus,
+		acc2.Status,
+		dirtyCount,
+		rootBefore[:8],
+		rootAfterMarkDirty[:8],
+	)
+}
 
-    for id, expectedStatus := range mutations {
-        acc, found := restoredTree.Get(id)
-        if !found {
-            t.Errorf("[L5] Account %d not found", id)
-            continue
-        }
-        t.Logf("[L5] id=%d: got status=%v expected=%v match=%v",
-            id, acc.Status, expectedStatus, acc.Status == expectedStatus)
-    }
+func TestRestoreDoesNotIncreaseSizeOnUpdates(t *testing.T) {
+	dir := "./test_restore_size_updates"
+	_ = os.RemoveAll(dir)
+	defer os.RemoveAll(dir)
 
-    assertRootEqual(t, "markdirty restore", finalRoot, mgr2.ComputeGlobalRoot())
+	mgr := setupIncrementalManager(t, dir)
+
+	tree, err := CreateTree[*Account](mgr, "accounts")
+	if err != nil {
+		t.Fatalf("CreateTree failed: %v", err)
+	}
+
+	makeFactory := func(mgr *UniversalManager) TreeFactory {
+		return func(name string) TreeInterface {
+			switch name {
+			case "accounts":
+				tr := New[*Account](mgr.config)
+				return &TypedTree[*Account]{Tree: tr}
+			default:
+				return nil
+			}
+		}
+	}
+
+	sortedMutationIDs := func(m map[uint64]AccountStatus) []uint64 {
+		ids := make([]uint64, 0, len(m))
+		for id := range m {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		return ids
+	}
+
+	assertTreeCardinality := func(t *testing.T, label string, tr *Tree[*Account], want int) {
+		t.Helper()
+
+		gotSize := tr.Size()
+		stats := tr.GetStats()
+		items := tr.GetAllItems()
+
+		uniq := make(map[uint64]int, len(items))
+		for _, acc := range items {
+			if acc == nil {
+				t.Fatalf("[%s] GetAllItems returned nil item", label)
+			}
+			uniq[acc.UID]++
+		}
+
+		t.Logf(
+			"[%s] size=%d stats.TotalItems=%d len(GetAllItems)=%d uniqueIDs=%d",
+			label,
+			gotSize,
+			stats.TotalItems,
+			len(items),
+			len(uniq),
+		)
+
+		if gotSize != want {
+			t.Fatalf("[%s] Size()=%d, want=%d", label, gotSize, want)
+		}
+		if stats.TotalItems != want {
+			t.Fatalf("[%s] GetStats().TotalItems=%d, want=%d", label, stats.TotalItems, want)
+		}
+		if len(items) != want {
+			t.Fatalf("[%s] len(GetAllItems())=%d, want=%d", label, len(items), want)
+		}
+		if len(uniq) != want {
+			t.Fatalf("[%s] unique IDs=%d, want=%d", label, len(uniq), want)
+		}
+
+		for id, count := range uniq {
+			if count != 1 {
+				t.Fatalf("[%s] id=%d appears %d times in GetAllItems()", label, id, count)
+			}
+		}
+	}
+
+	checkStatuses := func(t *testing.T, label string, tr *Tree[*Account], expected map[uint64]AccountStatus) {
+		t.Helper()
+
+		for _, id := range sortedMutationIDs(expected) {
+			acc, ok := tr.Get(id)
+			if !ok {
+				t.Fatalf("[%s] account %d not found", label, id)
+			}
+			if acc.Status != expected[id] {
+				t.Fatalf("[%s] account %d status=%v, want=%v", label, id, acc.Status, expected[id])
+			}
+		}
+	}
+
+	const initialCount = 100
+
+	for i := uint64(0); i < initialCount; i++ {
+		if err := tree.Insert(NewAccountDeterministic(i, StatusUser)); err != nil {
+			t.Fatalf("insert %d failed: %v", i, err)
+		}
+	}
+
+	assertTreeCardinality(t, "SOURCE_BEFORE_CP", tree, initialCount)
+
+	cpVersion, err := mgr.CreateCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateCheckpoint failed: %v", err)
+	}
+	t.Logf("[CP] version=%x", cpVersion[:8])
+
+	mutations := map[uint64]AccountStatus{
+		0:  StatusBlocked,
+		10: StatusBlocked,
+		20: StatusMM,
+		30: StatusAlgo,
+		50: StatusVIP,
+		99: StatusSystem,
+	}
+
+	ids := sortedMutationIDs(mutations)
+	for _, id := range ids {
+		acc, ok := tree.Get(id)
+		if !ok {
+			t.Fatalf("source account %d not found", id)
+		}
+		acc.Status = mutations[id]
+	}
+	tree.MarkDirty(ids...)
+
+	snapVersion, err := mgr.CreateSnapshot()
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	t.Logf("[SNAP] version=%x", snapVersion[:8])
+
+	sourceRoot := mgr.ComputeGlobalRoot()
+	assertTreeCardinality(t, "SOURCE_AFTER_INCREMENTAL", tree, initialCount)
+	checkStatuses(t, "SOURCE_AFTER_INCREMENTAL", tree, mutations)
+
+	header, err := mgr.snapshotMgr.storage.LoadHeader(&snapVersion)
+	if err != nil {
+		t.Fatalf("LoadHeader failed: %v", err)
+	}
+	if header.Kind != KindIncremental {
+		t.Fatalf("expected incremental snapshot, got kind=%v", header.Kind)
+	}
+
+	chain, err := mgr.snapshotMgr.storage.BuildChain(header.CheckpointRef, snapVersion)
+	if err != nil {
+		t.Fatalf("BuildChain failed: %v", err)
+	}
+	if len(chain) != 1 {
+		t.Fatalf("expected chain len=1, got %d", len(chain))
+	}
+
+	if err := mgr.CloseSnapshots(); err != nil {
+		t.Fatalf("CloseSnapshots source failed: %v", err)
+	}
+
+	// 1) Checkpoint-only restore: размер должен быть 100 и старые статусы.
+	mgrCP := setupIncrementalManager(t, dir)
+
+	cpRef := header.CheckpointRef
+	if err := mgrCP.snapshotMgr.loadCheckpoint(mgrCP, &cpRef, makeFactory(mgrCP)); err != nil {
+		_ = mgrCP.CloseSnapshots()
+		t.Fatalf("[CP] loadCheckpoint failed: %v", err)
+	}
+
+	cpTree, ok := GetTree[*Account](mgrCP, "accounts")
+	if !ok {
+		_ = mgrCP.CloseSnapshots()
+		t.Fatal("[CP] accounts tree not found")
+	}
+
+	assertTreeCardinality(t, "CP_ONLY_RESTORE", cpTree, initialCount)
+
+	for _, id := range ids {
+		acc, ok := cpTree.Get(id)
+		if !ok {
+			_ = mgrCP.CloseSnapshots()
+			t.Fatalf("[CP] account %d not found", id)
+		}
+		if acc.Status != StatusUser {
+			_ = mgrCP.CloseSnapshots()
+			t.Fatalf("[CP] account %d status=%v, want=%v", id, acc.Status, StatusUser)
+		}
+	}
+
+	if err := mgrCP.CloseSnapshots(); err != nil {
+		t.Fatalf("[CP] CloseSnapshots failed: %v", err)
+	}
+
+	// 2) Manual restore: checkpoint + applyIncremental.
+	mgrManual := setupIncrementalManager(t, dir)
+
+	cpRef2 := header.CheckpointRef
+	if err := mgrManual.snapshotMgr.loadCheckpoint(mgrManual, &cpRef2, makeFactory(mgrManual)); err != nil {
+		_ = mgrManual.CloseSnapshots()
+		t.Fatalf("[MANUAL] loadCheckpoint failed: %v", err)
+	}
+
+	for i, entry := range chain {
+		t.Logf("[MANUAL] applying chain[%d]=%x", i, entry.Version[:8])
+		if err := mgrManual.snapshotMgr.applyIncremental(mgrManual, entry); err != nil {
+			_ = mgrManual.CloseSnapshots()
+			t.Fatalf("[MANUAL] applyIncremental failed: %v", err)
+		}
+	}
+
+	manualTree, ok := GetTree[*Account](mgrManual, "accounts")
+	if !ok {
+		_ = mgrManual.CloseSnapshots()
+		t.Fatal("[MANUAL] accounts tree not found")
+	}
+
+	assertTreeCardinality(t, "MANUAL_RESTORE", manualTree, initialCount)
+	checkStatuses(t, "MANUAL_RESTORE", manualTree, mutations)
+
+	manualRoot := mgrManual.ComputeGlobalRoot()
+	if manualRoot != sourceRoot {
+		_ = mgrManual.CloseSnapshots()
+		t.Fatalf("[MANUAL] root=%x, want sourceRoot=%x", manualRoot[:8], sourceRoot[:8])
+	}
+
+	if err := mgrManual.CloseSnapshots(); err != nil {
+		t.Fatalf("[MANUAL] CloseSnapshots failed: %v", err)
+	}
+
+	// 3) Full restore through LoadFromSnapshot.
+	mgr2 := setupIncrementalManager(t, dir)
+	defer mgr2.CloseSnapshots()
+
+	if err := mgr2.LoadFromSnapshot(snapVersion, makeFactory(mgr2)); err != nil {
+		t.Fatalf("[FULL] LoadFromSnapshot failed: %v", err)
+	}
+
+	fullTree, ok := GetTree[*Account](mgr2, "accounts")
+	if !ok {
+		t.Fatal("[FULL] accounts tree not found")
+	}
+
+	assertTreeCardinality(t, "FULL_RESTORE", fullTree, initialCount)
+	checkStatuses(t, "FULL_RESTORE", fullTree, mutations)
+
+	fullRoot := mgr2.ComputeGlobalRoot()
+	if fullRoot != sourceRoot {
+		t.Fatalf("[FULL] root=%x, want sourceRoot=%x", fullRoot[:8], sourceRoot[:8])
+	}
 }

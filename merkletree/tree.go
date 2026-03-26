@@ -6,6 +6,8 @@ import (
 	"slices"
 	"cmp"
 	"sync/atomic"
+	
+	//"fmt"
 
 	"github.com/zeebo/blake3"
 )
@@ -182,31 +184,96 @@ func (t *Tree[T]) isDirtyTrackingEnabled() bool {
     return t.trackDirty.Load() 
 }
 
-//Вручную пометить узлы, которые нужно обновлялись напрямую 
-func (t *Tree[T]) MarkDirty(ids ...uint64) {
-    for _, id := range ids {
-        item, exists := t.items.Load(id)
-        if !exists {
-            continue
-        }
 
-        // Инвалидируем хеш узла
-        if node := t.findLeaf(t.root, id, 0); node != nil {
-            node.dirty.Store(true)
-        }
+// markPathDirty помечает dirty весь путь от root до leaf для указанного id.
+// Возвращает true, если leaf найден и путь успешно пройден.
+func (t *Tree[T]) markPathDirty(id uint64) bool {
+	if t.root == nil {
+		return false
+	}
 
-        // Добавляем в dirtyKeys для инкрементальных снапшотов
-        if t.trackDirty.Load() {
-            key := item.Key()
-            t.dirtyMu.Lock()
-            t.dirtyKeys[key] = struct{}{}
-            t.dirtyMu.Unlock()
-        }
-    }
-    t.rootCacheValid.Store(false)
+	key := t.normalizeKey(t.encodeID(id))
+	node := t.root
+	depth := 0
+
+	for node != nil {
+		// Помечаем текущий узел dirty только один раз.
+		if !node.dirty.Swap(true) {
+			t.dirtyNodes.Add(1)
+		}
+
+		node.mu.RLock()
+
+		if node.IsLeaf {
+			match := node.Value.ID() == id
+			node.mu.RUnlock()
+			return match
+		}
+
+		if depth >= len(key) {
+			node.mu.RUnlock()
+			return false
+		}
+
+		idx := key[depth]
+		var child *Node[T]
+		for i, k := range node.Keys {
+			if k == idx {
+				child = node.Children[i]
+				break
+			}
+		}
+
+		node.mu.RUnlock()
+
+		if child == nil {
+			return false
+		}
+
+		node = child
+		depth++
+	}
+
+	return false
 }
 
-// findLeaf — поиск листа по ID
+// MarkDirty вручную помечает элементы как изменённые,
+// если они были обновлены напрямую через указатель.
+func (t *Tree[T]) MarkDirty(ids ...uint64) {
+	if len(ids) == 0 {
+		return
+	}
+
+	trackDirty := t.trackDirty.Load()
+	changed := false
+
+	for _, id := range ids {
+		item, exists := t.items.Load(id)
+		if !exists {
+			continue
+		}
+
+		if !t.markPathDirty(id) {
+			continue
+		}
+
+		changed = true
+
+		if trackDirty {
+			key := item.Key()
+			t.dirtyMu.Lock()
+			t.dirtyKeys[key] = struct{}{}
+			delete(t.deletedKeys, key)
+			t.dirtyMu.Unlock()
+		}
+	}
+
+	if changed {
+		t.rootCacheValid.Store(false)
+	}
+}
+
+//DEPRECATED  findLeaf — поиск листа по ID
 func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
     if node == nil {
         return nil
@@ -222,6 +289,8 @@ func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
         }
         return nil
     }
+
+//fmt.Printf("[DEBUG] findLeaf(id) => false, id: %d, encodedId %x, normalizedId: %x\n", id, t.encodeID(id), t.normalizeKey(t.encodeID(id))) 
 
     nkey := t.normalizeKey(t.encodeID(id))
     if depth >= len(nkey) {
@@ -245,12 +314,16 @@ func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
 //Одиночная вставка с блокировкой 
 func (t *Tree[T]) Insert(item T) error {
     // Сначала пробуем дерево — если коллизия, maps не трогаем
-    if err := t.insertNode(t.root, item, 0); err != nil {
+    insertedNew, err := t.insertNode(t.root, item, 0)
+
+    if err != nil {
         return err
     }
 	
 	t.items.Store(item.ID(), item)
-    t.itemCount.Add(1)
+    if insertedNew {
+		t.itemCount.Add(1)
+	}
     t.cache.put(item.ID(), item)
     t.rootCacheValid.Store(false)
 
@@ -304,10 +377,13 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
     // Аллоцируем только если будут ошибки (nil — оптимистичный путь)
     var errs []error
     successCount := uint64(0)
+	insertedCount := uint64(0)
 
     for _, item := range items {
         // сначала дерево — если коллизия, maps не трогаем
-        if err := t.insertNodeUnderGlobalLock(t.root, item, 0); err != nil {
+		insertedNew, err := t.insertNodeUnderGlobalLock(t.root, item, 0)
+		
+        if err != nil {
             // коллизия — пропускаем maps/cache для этого элемента
             errs = append(errs, err)
             continue
@@ -332,11 +408,16 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
 		}
 	
         successCount++
+		
+		if insertedNew {
+			insertedCount++
+		}
+		
     }
 
     // itemCount только для успешных, не len(items)
-    t.itemCount.Add(successCount)
-    t.insertCount.Add(successCount)
+    t.itemCount.Add(insertedCount)
+	t.insertCount.Add(successCount)
     t.rootCacheValid.Store(false)
 
     // возвращаем nil если ошибок не было — не аллоцируем лишний slice
@@ -346,8 +427,11 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
 // insertBatchSequential последовательная вставка (per-node locking)
 func (t *Tree[T]) insertBatchSequential(items []T) []error {
 	var errs []error
+	insertedCount := uint64(0)
+	
 	for _, item := range items {
-		if err := t.insertNode(t.root, item, 0); err != nil {
+		insertedNew, err := t.insertNode(t.root, item, 0)
+		if err != nil {
             errs = append(errs, err)
             continue  // пропускаем — не кладём в maps
         }
@@ -369,11 +453,15 @@ func (t *Tree[T]) insertBatchSequential(items []T) []error {
 			delete(t.deletedKeys, k) // если был удалён — отменяем
 			t.dirtyMu.Unlock()
 		}
+		
+		if insertedNew {
+			insertedCount++
+		}
 	}
 	
 	successful := uint64(len(items) - len(errs))
 	
-	t.itemCount.Add(successful)
+	t.itemCount.Add(insertedCount)
     t.insertCount.Add(successful)
     t.rootCacheValid.Store(false)
 	
@@ -462,7 +550,8 @@ func (t *Tree[T]) insertBatchParallel(items []T) []error {
         go func(child *Node[T], slice []T, indices []int) {
             defer wg.Done()
             for j, item := range slice {
-                if err := t.insertNode(child, item, 1); err != nil {
+				//Тут  сложнее, пофиг отключим 
+                if _, err := t.insertNode(child, item, 1); err != nil {
                     itemErrs[indices[j]] = err // уникальный индекс — mutex не нужен
                 }
             }
@@ -524,6 +613,7 @@ func (t *Tree[T]) insertBatchParallel(items []T) []error {
     wg2.Wait()
 
     // itemCount только для успешных, не для всех
+	//TODO: некорректно считает метрику после загрузки (игнорит insertNew в t.insertNode)
     n := successCount.Load()
     t.itemCount.Add(n)
     t.insertCount.Add(n)
@@ -612,7 +702,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
             defer wg.Done()
             for group := range groupChan {
                 for _, gi := range group {
-                    if err := t.insertNode(t.root, gi.item, 0); err != nil {
+                    if _, err := t.insertNode(t.root, gi.item, 0); err != nil {
                         itemErrs[gi.index] = err // уникальный индекс — race-free
                     }
                 }
@@ -666,6 +756,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
 
     // itemCount только для успешных
     n := successCount.Load()
+	//TODO: некорректно считает метрику после загрузки (игнорит insertNew в t.insertNode)
     t.itemCount.Add(n)
     t.insertCount.Add(n)
     t.rootCacheValid.Store(false)
@@ -681,7 +772,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
 }
 
 // insertNodeUnderGlobalLock - вставка БЕЗ per-node блокировок (вызывается под t.mu.Lock)
-func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) error {
+func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) (bool, error) {
 	key := t.normalizeKey(item.Key())
 	
 	if depth >= t.maxDepth-1 {
@@ -698,12 +789,12 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) er
                     child.dirty.Store(true)
                     node.dirty.Store(true)
                     t.dirtyNodes.Add(1)
-                    return nil
+                    return false, nil
                 }
 				
 				// КОЛЛИЗИЯ: слот занят другим элементом — отказываем
                 // Дерево остаётся нетронутым, rollback не нужен
-                return &CollisionError{
+                return false, &CollisionError{
                     Slot:       idx,
                     Depth:      depth,
                     ExistingID: existingID,
@@ -722,19 +813,19 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) er
 		node.Children = append(node.Children, child)
 		node.dirty.Store(true)
 		t.dirtyNodes.Add(1)
-		return nil
+		return true, nil
 	}
 	
 	// Промежуточный узел - без изменений
 	idx := key[depth]
 	for i, k := range node.Keys {
 		if k == idx {
-			err := t.insertNodeUnderGlobalLock(node.Children[i], item, depth+1)
+			insertedNew, err := t.insertNodeUnderGlobalLock(node.Children[i], item, depth+1)
             if err == nil {
                 node.dirty.Store(true)
                 t.dirtyNodes.Add(1)
             }
-            return err
+            return insertedNew, err
 		}
 	}
 	
@@ -748,7 +839,7 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) er
 }
 
 // insertNode - ЕДИНЫЙ метод с per-node блокировками
-func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) error {
+func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) (bool, error) {
 	key := t.normalizeKey(item.Key())
 	node.mu.Lock()
 	
@@ -771,12 +862,12 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) error {
                     child.mu.Unlock()
                     node.dirty.Store(true)
                     t.dirtyNodes.Add(1)
-                    return nil
+                    return false, nil
                 }
 				
 				// Это КОЛЛИЗИЯ — отказываем
                 child.mu.Unlock()
-                return &CollisionError{
+                return false, &CollisionError{
                     Slot:       idx,
                     Depth:      depth,
                     ExistingID: existingID,
@@ -796,7 +887,7 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) error {
 		node.dirty.Store(true)
 		t.dirtyNodes.Add(1)
 		node.mu.Unlock()
-		return nil
+		return true, nil
 	}
 	
 	// Промежуточный узел - без изменений
@@ -806,12 +897,12 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) error {
 			child := node.Children[i]
 			node.mu.Unlock()
 			
-			err := t.insertNode(child, item, depth+1)
+			insertedNew, err := t.insertNode(child, item, depth+1)
             if err == nil {
                 node.dirty.Store(true)
                 t.dirtyNodes.Add(1)
             }
-            return err
+            return insertedNew, err
 		}
 	}
 	

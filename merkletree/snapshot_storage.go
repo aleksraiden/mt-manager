@@ -17,13 +17,6 @@ import (
 // Оптимизировано для high-frequency updates
 // ============================================
 
-/**
-const (
-	// Префиксы ключей
-	prefixSnapshotMeta = "snap:meta:"  // snap:meta:{version} → metadata
-	prefixSnapshotTree = "snap:tree:"  // snap:tree:{version}:{tree_name} → tree data
-	prefixGlobalMeta   = "global:"     // global:last, global:first, global:count
-) **/
 const (
     // Существующие
     prefixSnapshotMeta = "snap:meta:"
@@ -294,54 +287,6 @@ func (s *SnapshotStorage) LoadSnapshot(version *[32]byte) (*Snapshot, error) {
 // Metadata Operations
 // ============================================
 
-/**
-// GetMetadata возвращает метаданные снапшотов
-func (s *SnapshotStorage) GetMetadata() (*SnapshotMetadata, error) {
-	metadata := &SnapshotMetadata{}
-	
-	// First version
-	firstData, closer, err := s.db.Get([]byte(prefixGlobalMeta + "first"))
-	if err == nil {
-		copy(metadata.FirstVersion[:], firstData)
-		closer.Close()
-	} else if err != pebble.ErrNotFound {
-		return nil, err
-	}
-	
-	// Last version
-	lastData, closer, err := s.db.Get([]byte(prefixGlobalMeta + "last"))
-	if err == nil {
-		copy(metadata.LastVersion[:], lastData)
-		closer.Close()
-	} else if err != pebble.ErrNotFound {
-		return nil, err
-	}
-	
-	// Count
-	countData, closer, err := s.db.Get([]byte(prefixGlobalMeta + "count"))
-	if err == nil {
-		metadata.Count = int(binary.BigEndian.Uint32(countData))
-		closer.Close()
-	} else if err != pebble.ErrNotFound {
-		return nil, err
-	}
-	
-	// Total size (итерируем)
-	iter, err := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte(prefixSnapshotTree),
-		UpperBound: []byte(prefixSnapshotTree + "\xff"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer iter.Close()
-	
-	for iter.First(); iter.Valid(); iter.Next() {
-		metadata.TotalSize += int64(len(iter.Value()))
-	}
-	
-	return metadata, iter.Error()
-} **/
 func (s *SnapshotStorage) GetMetadata() (*SnapshotMetadata, error) {
     metadata := &SnapshotMetadata{}
 
@@ -444,39 +389,6 @@ func (s *SnapshotStorage) ListVersions() ([][32]byte, error) {
     return versions, nil
 }
 
-/**
-// DeleteSnapshot удаляет снапшот
-func (s *SnapshotStorage) DeleteSnapshot(version [32]byte) error {
-	// Получаем список деревьев
-	treeNames, err := s.listSnapshotTrees(version)
-	if err != nil {
-		return err
-	}
-	
-	batch := s.db.NewBatch()
-	defer batch.Close()
-	
-	// Удаляем метаданные
-	metaKey := makeSnapshotMetaKey(version)
-	if err := batch.Delete(metaKey, pebble.NoSync); err != nil {
-		return err
-	}
-	
-	// Удаляем деревья
-	for _, treeName := range treeNames {
-		treeKey := makeSnapshotTreeKey(version, treeName)
-		if err := batch.Delete(treeKey, pebble.NoSync); err != nil {
-			return err
-		}
-	}
-	
-	// Обновляем count
-	if err := s.decrementCount(batch); err != nil {
-		return err
-	}
-	
-	return batch.Commit(pebble.Sync)
-}**/
 func (s *SnapshotStorage) DeleteSnapshot(version [32]byte) error {
     // Определяем тип снапшота по наличию заголовка
     header, err := s.LoadHeader(&version)
