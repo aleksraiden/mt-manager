@@ -31,7 +31,7 @@ func NewTopNCache[T Hashable](capacity int, ascending bool) *TopNCache[T] {
 			enabled: false,
 		}
 	}
-	
+
 	return &TopNCache[T]{
 		items:     make([]T, 0, capacity),
 		capacity:  capacity,
@@ -56,29 +56,29 @@ func (tc *TopNCache[T]) TryInsert(item T) bool {
 	if !tc.enabled {
 		return false
 	}
-	
-	//Do NOT add 0-ID item into cache 
+
+	//Do NOT add 0-ID item into cache
 	if item.ID() == 0 {
-		return false 
+		return false
 	}
-	
+
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	
+
 	// Все операции под одним Lock - гарантия атомарности
 	count := len(tc.items)
 	key := keyToUint64(item.Key())
-	
+
 	// Кеш не заполнен - просто добавляем
 	if count < tc.capacity {
 		tc.items = append(tc.items, item)
 		tc.resortUnderLock()
 		return true
 	}
-	
+
 	// Кеш заполнен - проверяем, попадает ли элемент в top-N
 	lastKey := keyToUint64(tc.items[count-1].Key())
-	
+
 	shouldInsert := false
 	if tc.ascending {
 		// Min-heap: новый элемент < последнего
@@ -87,14 +87,14 @@ func (tc *TopNCache[T]) TryInsert(item T) bool {
 		// Max-heap: новый элемент > последнего
 		shouldInsert = key > lastKey
 	}
-	
+
 	if shouldInsert {
 		// Заменяем последний элемент и пересортировываем
 		tc.items[count-1] = item
 		tc.resortUnderLock()
 		return true
 	}
-	
+
 	return false
 }
 
@@ -105,18 +105,18 @@ func (tc *TopNCache[T]) Remove(item T) bool {
 	if !tc.enabled {
 		return false
 	}
-	
+
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	
+
 	count := len(tc.items)
 	id := item.ID()
-	
-	//Do NOT deleting 0-ID element 
+
+	//Do NOT deleting 0-ID element
 	if id == 0 {
 		return false
 	}
-	
+
 	// Линейный поиск элемента (O(n), но n <= capacity обычно мало)
 	for i := 0; i < count; i++ {
 		if tc.items[i].ID() == id {
@@ -125,7 +125,7 @@ func (tc *TopNCache[T]) Remove(item T) bool {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -135,10 +135,10 @@ func (tc *TopNCache[T]) Clear() {
 	if !tc.enabled {
 		return
 	}
-	
+
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	
+
 	// Очищаем без deallocate для переиспользования capacity
 	tc.items = tc.items[:0]
 }
@@ -154,19 +154,19 @@ func (tc *TopNCache[T]) GetTop(n int) []T {
 	if !tc.enabled {
 		return nil
 	}
-	
+
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
-	
+
 	count := len(tc.items)
 	if n > count {
 		n = count
 	}
-	
+
 	if n == 0 {
 		return nil
 	}
-	
+
 	// Копируем для thread-safety (caller может модифицировать результат)
 	result := make([]T, n)
 	copy(result, tc.items[:n])
@@ -182,15 +182,15 @@ func (tc *TopNCache[T]) GetFirst() (T, bool) {
 		var zero T
 		return zero, false
 	}
-	
+
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
-	
+
 	if len(tc.items) == 0 {
 		var zero T
 		return zero, false
 	}
-	
+
 	return tc.items[0], true
 }
 
@@ -200,10 +200,10 @@ func (tc *TopNCache[T]) Count() int {
 	if !tc.enabled {
 		return 0
 	}
-	
+
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
-	
+
 	return len(tc.items)
 }
 
@@ -218,18 +218,18 @@ func (tc *TopNCache[T]) GetIteratorMin() *TopNIterator[T] {
 	if !tc.enabled {
 		return NewTopNIterator[T](nil)
 	}
-	
+
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
-	
+
 	if len(tc.items) == 0 {
 		return NewTopNIterator[T](nil)
 	}
-	
+
 	// Копируем весь слайс для создания независимого snapshot
 	snapshot := make([]T, len(tc.items))
 	copy(snapshot, tc.items)
-	
+
 	return NewTopNIterator(snapshot)
 }
 
@@ -237,29 +237,30 @@ func (tc *TopNCache[T]) GetIteratorMin() *TopNIterator[T] {
 // Создает атомарный snapshot под Read Lock
 // Thread-safe: snapshot независим от дальнейших модификаций
 func (tc *TopNCache[T]) GetIteratorMax() *TopNIterator[T] {
-    if !tc.enabled {
-        return NewTopNIterator[T](nil)
-    }
+	if !tc.enabled {
+		return NewTopNIterator[T](nil)
+	}
 
-    tc.mu.RLock()
-    defer tc.mu.RUnlock()
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
-    if len(tc.items) == 0 {
-        return NewTopNIterator[T](nil)
-    }
+	if len(tc.items) == 0 {
+		return NewTopNIterator[T](nil)
+	}
 
-    snapshot := make([]T, len(tc.items))
-    copy(snapshot, tc.items)
+	snapshot := make([]T, len(tc.items))
+	copy(snapshot, tc.items)
 
-    // Если кеш ascending (min-heap) — разворачиваем для max-итерации
-    if tc.ascending {
-        for i, j := 0, len(snapshot)-1; i < j; i, j = i+1, j-1 {
-            snapshot[i], snapshot[j] = snapshot[j], snapshot[i]
-        }
-    }
+	// Если кеш ascending (min-heap) — разворачиваем для max-итерации
+	if tc.ascending {
+		for i, j := 0, len(snapshot)-1; i < j; i, j = i+1, j-1 {
+			snapshot[i], snapshot[j] = snapshot[j], snapshot[i]
+		}
+	}
 
-    return NewTopNIterator(snapshot)
+	return NewTopNIterator(snapshot)
 }
+
 // ============================================
 // Internal helpers (вызываются только под Lock)
 // ============================================
@@ -271,7 +272,7 @@ func (tc *TopNCache[T]) resortUnderLock() {
 	if count <= 1 {
 		return
 	}
-	
+
 	// Сортировка O(n log n) выполняется под Write Lock
 	sort.Slice(tc.items, func(i, j int) bool {
 		keyI := keyToUint64(tc.items[i].Key())
@@ -300,7 +301,7 @@ func NewTopNIterator[T Hashable](items []T) *TopNIterator[T] {
 	// Копируем слайс для safety (даже если items уже копия)
 	snapshot := make([]T, len(items))
 	copy(snapshot, items)
-	
+
 	return &TopNIterator[T]{
 		items:   snapshot,
 		current: 0,
@@ -319,7 +320,7 @@ func (it *TopNIterator[T]) Next() (T, bool) {
 		var zero T
 		return zero, false
 	}
-	
+
 	item := it.items[it.current]
 	it.current++
 	return item, true
@@ -332,7 +333,7 @@ func (it *TopNIterator[T]) Peek() (T, bool) {
 		var zero T
 		return zero, false
 	}
-	
+
 	return it.items[it.current], true
 }
 
@@ -353,7 +354,7 @@ func (it *TopNIterator[T]) ToSlice() []T {
 	if !it.HasNext() {
 		return nil
 	}
-	
+
 	result := make([]T, it.Remaining())
 	copy(result, it.items[it.current:])
 	return result
@@ -373,7 +374,7 @@ func (it *TopNIterator[T]) ForEach(fn func(T)) {
 // Итератор остается на позиции первого не прошедшего элемента
 func (it *TopNIterator[T]) TakeWhile(predicate func(T) bool) []T {
 	result := make([]T, 0, it.Remaining())
-	
+
 	for it.HasNext() {
 		item, _ := it.Peek()
 		if !predicate(item) {
@@ -382,7 +383,7 @@ func (it *TopNIterator[T]) TakeWhile(predicate func(T) bool) []T {
 		it.Next()
 		result = append(result, item)
 	}
-	
+
 	return result
 }
 

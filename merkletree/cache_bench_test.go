@@ -255,13 +255,13 @@ func TestTreeSpecificTopN(t *testing.T) {
 
 	// Дерево 1: использует глобальный TopN = 5
 	tree1, _ := CreateTree[*Account](mgr, "tree1")
-	
+
 	// Дерево 2: переопределяет TopN = 10
 	cfg2 := DefaultConfig()
 	cfg2.TopN = 10
 	cfg2.UseTopNMin = true
 	tree2, _ := CreateTreeWithConfig[*Account](mgr, "tree2", cfg2)
-	
+
 	// Дерево 3: отключает TopN
 	cfg3 := DefaultConfig()
 	cfg3.TopN = 0

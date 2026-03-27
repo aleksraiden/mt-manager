@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 )
 
-const DefaultArenaBlockSize 	= 8192
+const DefaultArenaBlockSize = 8192
 
 // ConcurrentArena arena с минимальными блокировками
 type ConcurrentArena[T Hashable] struct {
@@ -20,9 +20,9 @@ type ConcurrentArena[T Hashable] struct {
 // newConcurrentArena создает concurrent arena
 func newConcurrentArena[T Hashable](blockSize int) *ConcurrentArena[T] {
 	if blockSize <= 0 {
-        blockSize = DefaultArenaBlockSize
-    }
-	
+		blockSize = DefaultArenaBlockSize
+	}
+
 	arena := &ConcurrentArena[T]{
 		blocks:    make([][]Node[T], 0, 16),
 		blockSize: blockSize, //NodeBlockSize,

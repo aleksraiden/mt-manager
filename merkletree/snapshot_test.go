@@ -453,4 +453,3 @@ func TestSnapshotStress(t *testing.T) {
 	t.Logf("  Memtable size: %d bytes", stats.MemtableSize)
 	t.Logf("  WAL size: %d bytes", stats.WALSize)
 }
-

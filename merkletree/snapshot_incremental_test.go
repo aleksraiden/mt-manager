@@ -2,14 +2,14 @@
 package merkletree
 
 import (
+	"encoding/binary"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 	"time"
-    "fmt"
-    "io"
-	"sort"
-    "path/filepath"
-	"encoding/binary"
 )
 
 // ============================================
@@ -75,11 +75,11 @@ func TestCheckpointBasic(t *testing.T) {
 
 	// Версия чекпоинта должна совпадать с глобальным корнем
 	assertRootEqual(t, "checkpoint version vs global root", cpVersion, rootBefore)
-	
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
-	
+
 	// Восстанавливаем в новый менеджер
 	mgr2 := setupIncrementalManager(t, dir)
 	defer mgr2.CloseSnapshots()
@@ -153,7 +153,7 @@ func TestIncrementalSnapshotBasic(t *testing.T) {
 
 	rootOriginal := mgr.ComputeGlobalRoot()
 
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
 
@@ -229,11 +229,11 @@ func TestIncrementalWithDeletions(t *testing.T) {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
 	t.Logf("Snapshot with deletions: %x (expected %d items)", snapVersion[:8], expectedSize)
-	
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
-	
+
 	// Восстанавливаем
 	mgr2 := setupIncrementalManager(t, dir)
 	defer mgr2.CloseSnapshots()
@@ -284,11 +284,11 @@ func TestCheckpointRestoreFromIncremental(t *testing.T) {
 		}
 		mgr.CreateSnapshot()
 	}
-	
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
-	
+
 	// Загружаем именно чекпоинт — должно быть только 300 элементов,
 	// без применения последующих дельт
 	mgr2 := setupIncrementalManager(t, dir)
@@ -424,7 +424,6 @@ func TestIncrementalChain(t *testing.T) {
 	}
 }
 
-
 // ============================================
 // TestTrackDirtyDisabled
 // Проверяет: при TrackDirty=false CreateSnapshot() → всегда чекпоинт
@@ -463,11 +462,11 @@ func TestTrackDirtyDisabled(t *testing.T) {
 		t.Errorf("Expected KindCheckpoint, got %v", header.Kind)
 	}
 	t.Logf("Snapshot kind: checkpoint (correct, TrackDirty=false)")
-	
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
-	
+
 	// Восстановление должно работать как обычный чекпоинт
 	mgr2, _ := NewUniversalManagerWithSnapshot(cfg, dir)
 	defer mgr2.CloseSnapshots()
@@ -525,11 +524,11 @@ func TestIncrementalMultipleTrees(t *testing.T) {
 	t.Logf("Incremental: %x (only balances changed)", snapVersion[:8])
 
 	rootBefore := mgr.ComputeGlobalRoot()
-	
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
-	
+
 	// Восстанавливаем
 	mgr2 := setupIncrementalManager(t, dir)
 	defer mgr2.CloseSnapshots()
@@ -706,8 +705,8 @@ func TestIncrementalEmptyDelta(t *testing.T) {
 	if snapVersion != rootBefore {
 		t.Logf("Note: empty delta produced new version %x (vs root %x)", snapVersion[:8], rootBefore[:8])
 	}
-	
-	if err := mgr.CloseSnapshots(); err != nil {  // ← явное закрытие
+
+	if err := mgr.CloseSnapshots(); err != nil { // ← явное закрытие
 		t.Fatalf("close mgr: %v", err)
 	}
 
@@ -795,10 +794,7 @@ func TestIncrementalTimings(t *testing.T) {
 	}
 }
 
-
-
-
-//Helpers 
+// Helpers
 // copySnapshotStorage копирует директорию PebbleDB из src в dst.
 // ВАЖНО: src должен быть закрыт перед вызовом (PebbleDB держит эксклюзивный лок).
 func copySnapshotStorage(t *testing.T, src, dst string) error {

@@ -1,24 +1,24 @@
 package merkletree
 
 import (
-	"runtime"
-	"sync"
-	"slices"
 	"cmp"
+	"runtime"
+	"slices"
+	"sync"
 	"sync/atomic"
-	
+
 	//"fmt"
 
 	"github.com/zeebo/blake3"
 )
 
 const (
-	NodeBlockSize 			= 8192 // 8k nodes per block, ~1-2MB depending on T
-	
+	NodeBlockSize = 8192 // 8k nodes per block, ~1-2MB depending on T
+
 	// Агрессивные пороги для больших систем
-	SmallBatchThreshold    = 32  
-	ParallelBatchThreshold = 512   // 32..512 → sequential
-    MegaParallelThreshold  = 8196  // 512..8196 → parallel, >8196 → mega
+	SmallBatchThreshold    = 32
+	ParallelBatchThreshold = 512  // 32..512 → sequential
+	MegaParallelThreshold  = 8196 // 512..8196 → parallel, >8196 → mega
 )
 
 var (
@@ -27,72 +27,73 @@ var (
 )
 
 var blake3HasherPool = sync.Pool{
-    New: func() any { return blake3.New() },
+	New: func() any { return blake3.New() },
 }
 
 var childHashSlicePool = sync.Pool{
-    New: func() any {
-        s := make([][32]byte, 0, 256)
-        return &s
-    },
+	New: func() any {
+		s := make([][32]byte, 0, 256)
+		return &s
+	},
 }
 
 // Tree
 type Tree[T Hashable] struct {
-    root          *Node[T]
-    items         *ShardedItemMap[T]
-    itemCount     atomic.Uint64
-    arena         *ConcurrentArena[T]
-    cache         *ShardedCache[T]
-    maxDepth      int
-    keyOrder      KeyOrder
+	root      *Node[T]
+	items     *ShardedItemMap[T]
+	itemCount atomic.Uint64
+	arena     *ConcurrentArena[T]
+	cache     *ShardedCache[T]
+	maxDepth  int
+	keyOrder  KeyOrder
+	excludeState bool
 
-    _padding0     [40]byte          // ← до 64–128 байт
+	_padding0 [40]byte // ← до 64–128 байт
 
-    mu            sync.RWMutex
+	mu sync.RWMutex
 
-    topNCache     *TopNCache[T]
-    name          string
-	
+	topNCache *TopNCache[T]
+	name      string
+
 	// Dirty tracking для инкрементальных снапшотов
-    dirtyMu      sync.Mutex
-    dirtyKeys    map[[8]byte]struct{} // ключи изменённых/добавленных элементов
-    deletedKeys  map[[8]byte]struct{} // ключи удалённых элементов
-    trackDirty   atomic.Bool          // включён ли трекинг
+	dirtyMu     sync.Mutex
+	dirtyKeys   map[[8]byte]struct{} // ключи изменённых/добавленных элементов
+	deletedKeys map[[8]byte]struct{} // ключи удалённых элементов
+	trackDirty  atomic.Bool          // включён ли трекинг
 
-    _padding1     [48]byte
-    dirtyNodes    atomic.Uint64
-    cachedRoot    atomic.Value
-    rootCacheValid atomic.Bool
-	
-	keyIndex 	sync.Map // [8]byte → uint64 (key → id)
+	_padding1      [48]byte
+	dirtyNodes     atomic.Uint64
+	cachedRoot     atomic.Value
+	rootCacheValid atomic.Bool
 
-    _padding2     [40]byte
-    insertCount   atomic.Uint64
-    deleteCount   atomic.Uint64
-    deletedNodeCount atomic.Uint64
-    getCount      atomic.Uint64
+	keyIndex sync.Map // [8]byte → uint64 (key → id)
 
-    _padding3     [32]byte
-    cacheHits     atomic.Uint64
-    cacheMisses   atomic.Uint64
-    computeCount  atomic.Uint64
+	_padding2        [40]byte
+	insertCount      atomic.Uint64
+	deleteCount      atomic.Uint64
+	deletedNodeCount atomic.Uint64
+	getCount         atomic.Uint64
+
+	_padding3    [32]byte
+	cacheHits    atomic.Uint64
+	cacheMisses  atomic.Uint64
+	computeCount atomic.Uint64
 }
 
 // Node - минимальный padding только для mutex
 type Node[T Hashable] struct {
 	Hash     [32]byte
-    Children []*Node[T]
-    Keys     []byte
-    Value    T
-	
-	IsLeaf   bool
-	
-	_padding1 [55]byte     // выравнивание до 64 байт
-    dirty    atomic.Bool
-	
+	Children []*Node[T]
+	Keys     []byte
+	Value    T
+
+	IsLeaf bool
+
+	_padding1 [55]byte // выравнивание до 64 байт
+	dirty     atomic.Bool
+
 	_padding2 [56]byte     // или 48–64 байт
-    mu       sync.RWMutex // В отдельной cache line от данных
+	mu        sync.RWMutex // В отдельной cache line от данных
 }
 
 func New[T Hashable](cfg *Config) *Tree[T] {
@@ -102,10 +103,10 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 
 	arena := newConcurrentArena[T](DefaultArenaBlockSize)
 	root := arena.alloc()
-	
+
 	if cfg.MaxDepth < 1 || cfg.MaxDepth > 8 {
-        panic("merkletree: MaxDepth must be between 1 and 8 (key length)")
-    }
+		panic("merkletree: MaxDepth must be between 1 and 8 (key length)")
+	}
 
 	t := &Tree[T]{
 		root:     root,
@@ -113,26 +114,27 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 		cache:    newShardedCache[T](cfg.CacheSize, cfg.CacheShards),
 		maxDepth: cfg.MaxDepth,
 		keyOrder: cfg.KeyEncoding,
-		items:	  NewShardedItemMap[T](),
+		items:    NewShardedItemMap[T](),
+		excludeState: cfg.ExcludeState,
 	}
-	
+
 	// СТАЛО: TopN > 0 всегда создаёт кеш, флаги уточняют режим
 	if cfg.TopN > 0 {
 		if cfg.UseTopNMax && !cfg.UseTopNMin {
 			t.topNCache = NewTopNCache[T](cfg.TopN, false) // явный max-heap
 		} else {
-			t.topNCache = NewTopNCache[T](cfg.TopN, true)  // min-heap (дефолт)
+			t.topNCache = NewTopNCache[T](cfg.TopN, true) // min-heap (дефолт)
 		}
 	}
-	
+
 	if cfg.TrackDirty {
-        t.trackDirty.Store(true)
-		t.dirtyKeys   = make(map[[8]byte]struct{})
-        t.deletedKeys = make(map[[8]byte]struct{})
-    }
-		
+		t.trackDirty.Store(true)
+		t.dirtyKeys = make(map[[8]byte]struct{})
+		t.deletedKeys = make(map[[8]byte]struct{})
+	}
+
 	t.cachedRoot.Store([32]byte{}) // zero value
-	
+
 	return t
 }
 
@@ -140,50 +142,49 @@ func New[T Hashable](cfg *Config) *Tree[T] {
 // При KeyOrderMSB — no-op (нулевой оверхед).
 // При KeyOrderLSB — reverses bytes.
 func (t *Tree[T]) normalizeKey(key [8]byte) [8]byte {
-    if t.keyOrder == KeyOrderLSB {
-        return [8]byte{key[7], key[6], key[5], key[4],
-                       key[3], key[2], key[1], key[0]}
-    }
-    return key
+	if t.keyOrder == KeyOrderLSB {
+		return [8]byte{key[7], key[6], key[5], key[4],
+			key[3], key[2], key[1], key[0]}
+	}
+	return key
 }
 
 // encodeID конвертирует uint64 в ключ с учётом keyOrder.
 // Используется в RangeQueryByID.
 func (t *Tree[T]) encodeID(id uint64) [8]byte {
-    if t.keyOrder == KeyOrderLSB {
-        return KeyLSB(id)
-    }
-    return KeyMSB(id)
+	if t.keyOrder == KeyOrderLSB {
+		return KeyLSB(id)
+	}
+	return KeyMSB(id)
 }
 
 func (t *Tree[T]) EnableDirtyTracking() {
-    t.dirtyMu.Lock()
-    defer t.dirtyMu.Unlock()
-    t.trackDirty.Store(true) 
-    t.dirtyKeys   = make(map[[8]byte]struct{})
-    t.deletedKeys = make(map[[8]byte]struct{})
+	t.dirtyMu.Lock()
+	defer t.dirtyMu.Unlock()
+	t.trackDirty.Store(true)
+	t.dirtyKeys = make(map[[8]byte]struct{})
+	t.deletedKeys = make(map[[8]byte]struct{})
 }
 
 func (t *Tree[T]) DisableDirtyTracking() {
-    t.dirtyMu.Lock()
-    defer t.dirtyMu.Unlock()
-    t.trackDirty.Store(false) 
-    t.dirtyKeys   = make(map[[8]byte]struct{})
-    t.deletedKeys = make(map[[8]byte]struct{})
+	t.dirtyMu.Lock()
+	defer t.dirtyMu.Unlock()
+	t.trackDirty.Store(false)
+	t.dirtyKeys = make(map[[8]byte]struct{})
+	t.deletedKeys = make(map[[8]byte]struct{})
 }
 
 func (t *Tree[T]) ResetDirtyTracking() {
-    t.dirtyMu.Lock()
-    defer t.dirtyMu.Unlock()
-    t.dirtyKeys   = make(map[[8]byte]struct{})
-    t.deletedKeys = make(map[[8]byte]struct{})
+	t.dirtyMu.Lock()
+	defer t.dirtyMu.Unlock()
+	t.dirtyKeys = make(map[[8]byte]struct{})
+	t.deletedKeys = make(map[[8]byte]struct{})
 }
 
 // isDirtyTrackingEnabled возвращает true если трекинг изменений включён
 func (t *Tree[T]) isDirtyTrackingEnabled() bool {
-    return t.trackDirty.Load() 
+	return t.trackDirty.Load()
 }
-
 
 // markPathDirty помечает dirty весь путь от root до leaf для указанного id.
 // Возвращает true, если leaf найден и путь успешно пройден.
@@ -273,95 +274,95 @@ func (t *Tree[T]) MarkDirty(ids ...uint64) {
 	}
 }
 
-//DEPRECATED  findLeaf — поиск листа по ID
+// DEPRECATED  findLeaf — поиск листа по ID
 func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
-    if node == nil {
-        return nil
-    }
+	if node == nil {
+		return nil
+	}
 
-    node.mu.RLock()
+	node.mu.RLock()
 
-    if node.IsLeaf {
-        match := node.Value.ID() == id
-        node.mu.RUnlock()
-        if match {
-            return node
-        }
-        return nil
-    }
+	if node.IsLeaf {
+		match := node.Value.ID() == id
+		node.mu.RUnlock()
+		if match {
+			return node
+		}
+		return nil
+	}
 
-//fmt.Printf("[DEBUG] findLeaf(id) => false, id: %d, encodedId %x, normalizedId: %x\n", id, t.encodeID(id), t.normalizeKey(t.encodeID(id))) 
+	//fmt.Printf("[DEBUG] findLeaf(id) => false, id: %d, encodedId %x, normalizedId: %x\n", id, t.encodeID(id), t.normalizeKey(t.encodeID(id)))
 
-    nkey := t.normalizeKey(t.encodeID(id))
-    if depth >= len(nkey) {
-        node.mu.RUnlock()
-        return nil
-    }
+	nkey := t.normalizeKey(t.encodeID(id))
+	if depth >= len(nkey) {
+		node.mu.RUnlock()
+		return nil
+	}
 
-    idx := nkey[depth]
-    var child *Node[T]
-    for i, k := range node.Keys {
-        if k == idx {
-            child = node.Children[i]
-            break
-        }
-    }
-    node.mu.RUnlock()
+	idx := nkey[depth]
+	var child *Node[T]
+	for i, k := range node.Keys {
+		if k == idx {
+			child = node.Children[i]
+			break
+		}
+	}
+	node.mu.RUnlock()
 
-    return t.findLeaf(child, id, depth+1)
+	return t.findLeaf(child, id, depth+1)
 }
 
-//Одиночная вставка с блокировкой 
+// Одиночная вставка с блокировкой
 func (t *Tree[T]) Insert(item T) error {
-    // Сначала пробуем дерево — если коллизия, maps не трогаем
-    insertedNew, err := t.insertNode(t.root, item, 0)
+	// Сначала пробуем дерево — если коллизия, maps не трогаем
+	insertedNew, err := t.insertNode(t.root, item, 0)
 
-    if err != nil {
-        return err
-    }
-	
+	if err != nil {
+		return err
+	}
+
 	t.items.Store(item.ID(), item)
-    if insertedNew {
+	if insertedNew {
 		t.itemCount.Add(1)
 	}
-    t.cache.put(item.ID(), item)
-    t.rootCacheValid.Store(false)
+	t.cache.put(item.ID(), item)
+	t.rootCacheValid.Store(false)
 
-    if t.topNCache != nil {
-        t.topNCache.TryInsert(item)
-    }
-	
+	if t.topNCache != nil {
+		t.topNCache.TryInsert(item)
+	}
+
 	// Обновляем key index
-    t.keyIndex.Store(item.Key(), item.ID())
-	
-	if t.trackDirty.Load() {
-        t.dirtyMu.Lock()
-        k := item.Key()
-        t.dirtyKeys[k] = struct{}{}
-        delete(t.deletedKeys, k) // если был удалён — отменяем
-        t.dirtyMu.Unlock()
-    }
+	t.keyIndex.Store(item.Key(), item.ID())
 
-    t.insertCount.Add(1)
-	
+	if t.trackDirty.Load() {
+		t.dirtyMu.Lock()
+		k := item.Key()
+		t.dirtyKeys[k] = struct{}{}
+		delete(t.deletedKeys, k) // если был удалён — отменяем
+		t.dirtyMu.Unlock()
+	}
+
+	t.insertCount.Add(1)
+
 	return nil
 }
 
 // InsertBatch вставляет батч элементов (автоматический выбор стратегии)
 func (t *Tree[T]) InsertBatch(items []T) []error {
-    if len(items) == 0 {
-        return nil
-    }
-    switch {
-    case len(items) < SmallBatchThreshold:
-        return t.insertBatchSimple(items)
-    case len(items) < ParallelBatchThreshold:
-       return  t.insertBatchSequential(items)
-    case len(items) < MegaParallelThreshold:
-        return t.insertBatchParallel(items)  
-    default:
-        return t.insertBatchMegaParallel(items)
-    }
+	if len(items) == 0 {
+		return nil
+	}
+	switch {
+	case len(items) < SmallBatchThreshold:
+		return t.insertBatchSimple(items)
+	case len(items) < ParallelBatchThreshold:
+		return t.insertBatchSequential(items)
+	case len(items) < MegaParallelThreshold:
+		return t.insertBatchParallel(items)
+	default:
+		return t.insertBatchMegaParallel(items)
+	}
 }
 
 // insertBatchSimple для маленьких батчей (с глобальной блокировкой)
@@ -369,36 +370,36 @@ func (t *Tree[T]) InsertBatch(items []T) []error {
 // порядок операций — сначала дерево, потом maps (как в parallel/mega)
 // maps/cache обновляются только для успешных элементов
 func (t *Tree[T]) insertBatchSimple(items []T) []error {
-    // Глобальная блокировка на весь батч — insertNodeUnderGlobalLock работает без per-node locks
-    t.mu.Lock()
-    defer t.mu.Unlock()
+	// Глобальная блокировка на весь батч — insertNodeUnderGlobalLock работает без per-node locks
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-    // срез ошибок и счётчик успешных
-    // Аллоцируем только если будут ошибки (nil — оптимистичный путь)
-    var errs []error
-    successCount := uint64(0)
+	// срез ошибок и счётчик успешных
+	// Аллоцируем только если будут ошибки (nil — оптимистичный путь)
+	var errs []error
+	successCount := uint64(0)
 	insertedCount := uint64(0)
 
-    for _, item := range items {
-        // сначала дерево — если коллизия, maps не трогаем
+	for _, item := range items {
+		// сначала дерево — если коллизия, maps не трогаем
 		insertedNew, err := t.insertNodeUnderGlobalLock(t.root, item, 0)
-		
-        if err != nil {
-            // коллизия — пропускаем maps/cache для этого элемента
-            errs = append(errs, err)
-            continue
-        }
 
-        // Теперь: maps/cache только для успешно вставленных
-        t.items.Store(item.ID(), item)
-        t.cache.put(item.ID(), item)
-        if t.topNCache != nil {
-            t.topNCache.TryInsert(item)
-        }
-		
+		if err != nil {
+			// коллизия — пропускаем maps/cache для этого элемента
+			errs = append(errs, err)
+			continue
+		}
+
+		// Теперь: maps/cache только для успешно вставленных
+		t.items.Store(item.ID(), item)
+		t.cache.put(item.ID(), item)
+		if t.topNCache != nil {
+			t.topNCache.TryInsert(item)
+		}
+
 		// Обновляем key index
 		t.keyIndex.Store(item.Key(), item.ID())
-		
+
 		if t.trackDirty.Load() {
 			t.dirtyMu.Lock()
 			k := item.Key()
@@ -406,46 +407,46 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
 			delete(t.deletedKeys, k) // если был удалён — отменяем
 			t.dirtyMu.Unlock()
 		}
-	
-        successCount++
-		
+
+		successCount++
+
 		if insertedNew {
 			insertedCount++
 		}
-		
-    }
 
-    // itemCount только для успешных, не len(items)
-    t.itemCount.Add(insertedCount)
+	}
+
+	// itemCount только для успешных, не len(items)
+	t.itemCount.Add(insertedCount)
 	t.insertCount.Add(successCount)
-    t.rootCacheValid.Store(false)
+	t.rootCacheValid.Store(false)
 
-    // возвращаем nil если ошибок не было — не аллоцируем лишний slice
-    return errs
+	// возвращаем nil если ошибок не было — не аллоцируем лишний slice
+	return errs
 }
 
 // insertBatchSequential последовательная вставка (per-node locking)
 func (t *Tree[T]) insertBatchSequential(items []T) []error {
 	var errs []error
 	insertedCount := uint64(0)
-	
+
 	for _, item := range items {
 		insertedNew, err := t.insertNode(t.root, item, 0)
 		if err != nil {
-            errs = append(errs, err)
-            continue  // пропускаем — не кладём в maps
-        }
-		
+			errs = append(errs, err)
+			continue // пропускаем — не кладём в maps
+		}
+
 		t.items.Store(item.ID(), item)
 		t.cache.put(item.ID(), item)
-		
+
 		if t.topNCache != nil {
 			t.topNCache.TryInsert(item)
 		}
-		
+
 		// Обновляем key index
 		t.keyIndex.Store(item.Key(), item.ID())
-		
+
 		if t.trackDirty.Load() {
 			t.dirtyMu.Lock()
 			k := item.Key()
@@ -453,19 +454,19 @@ func (t *Tree[T]) insertBatchSequential(items []T) []error {
 			delete(t.deletedKeys, k) // если был удалён — отменяем
 			t.dirtyMu.Unlock()
 		}
-		
+
 		if insertedNew {
 			insertedCount++
 		}
 	}
-	
+
 	successful := uint64(len(items) - len(errs))
-	
+
 	t.itemCount.Add(insertedCount)
-    t.insertCount.Add(successful)
-    t.rootCacheValid.Store(false)
-	
-    return errs
+	t.insertCount.Add(successful)
+	t.rootCacheValid.Store(false)
+
+	return errs
 }
 
 // insertBatchParallel параллельная вставка
@@ -473,129 +474,129 @@ func (t *Tree[T]) insertBatchSequential(items []T) []error {
 // порядок операций инвертирован — сначала дерево, потом maps
 // чтобы при коллизии maps остались чистыми без rollback
 func (t *Tree[T]) insertBatchParallel(items []T) []error {
-    if len(items) == 0 {
-        return nil
-    }
+	if len(items) == 0 {
+		return nil
+	}
 
-    if t.maxDepth <= 1 {
-        return t.insertBatchSequential(items)
-    }
+	if t.maxDepth <= 1 {
+		return t.insertBatchSequential(items)
+	}
 
-    // itemErrs[i] хранит ошибку для items[i], nil = успех
-    // Размер совпадает с items — каждый элемент имеет уникальный индекс
-    // Race-free: каждый элемент принадлежит ровно одному bucket'у →
-    //            только одна горутина пишет в конкретный itemErrs[i]
-    itemErrs := make([]error, len(items))
+	// itemErrs[i] хранит ошибку для items[i], nil = успех
+	// Размер совпадает с items — каждый элемент имеет уникальный индекс
+	// Race-free: каждый элемент принадлежит ровно одному bucket'у →
+	//            только одна горутина пишет в конкретный itemErrs[i]
+	itemErrs := make([]error, len(items))
 
-    // bucket теперь хранит indices — позиции элементов в оригинальном items[]
-    // Нужно для записи ошибок в правильный слот itemErrs без mutex
-    type bucket struct {
-        keyByte byte
-        items   []T
-        indices []int //позиции в items[] для записи ошибок
-    }
+	// bucket теперь хранит indices — позиции элементов в оригинальном items[]
+	// Нужно для записи ошибок в правильный слот itemErrs без mutex
+	type bucket struct {
+		keyByte byte
+		items   []T
+		indices []int //позиции в items[] для записи ошибок
+	}
 
-    //Phase 1 = группировка + индексация, Phase 2 = дерево, Phase 3 = maps
-    bucketMap := make(map[byte]*bucket, 256)
-    for i, item := range items {
-        kb := t.normalizeKey(item.Key())[0]
-        b, ok := bucketMap[kb]
-        if !ok {
-            b = &bucket{keyByte: kb}
-            bucketMap[kb] = b
-        }
-        b.items = append(b.items, item)
-        b.indices = append(b.indices, i) // запоминаем позицию
-    }
+	//Phase 1 = группировка + индексация, Phase 2 = дерево, Phase 3 = maps
+	bucketMap := make(map[byte]*bucket, 256)
+	for i, item := range items {
+		kb := t.normalizeKey(item.Key())[0]
+		b, ok := bucketMap[kb]
+		if !ok {
+			b = &bucket{keyByte: kb}
+			bucketMap[kb] = b
+		}
+		b.items = append(b.items, item)
+		b.indices = append(b.indices, i) // запоминаем позицию
+	}
 
-    type subtreeWork struct {
-        child   *Node[T]
-        items   []T
-        indices []int 
-    }
-    work := make([]subtreeWork, 0, len(bucketMap))
+	type subtreeWork struct {
+		child   *Node[T]
+		items   []T
+		indices []int
+	}
+	work := make([]subtreeWork, 0, len(bucketMap))
 
-    // Фаза 2: под одним root.Lock() находим/создаём детей (без изменений)
-    t.root.mu.Lock()
-    for _, b := range bucketMap {
-        childIdx := -1
-        for i, k := range t.root.Keys {
-            if k == b.keyByte {
-                childIdx = i
-                break
-            }
-        }
+	// Фаза 2: под одним root.Lock() находим/создаём детей (без изменений)
+	t.root.mu.Lock()
+	for _, b := range bucketMap {
+		childIdx := -1
+		for i, k := range t.root.Keys {
+			if k == b.keyByte {
+				childIdx = i
+				break
+			}
+		}
 
-        var child *Node[T]
-        if childIdx >= 0 {
-            child = t.root.Children[childIdx]
-        } else {
-            child = t.arena.alloc()
-            t.root.Keys = append(t.root.Keys, b.keyByte)
-            t.root.Children = append(t.root.Children, child)
-            t.root.dirty.Store(true)
-            t.dirtyNodes.Add(1)
-        }
-        work = append(work, subtreeWork{child, b.items, b.indices}) // ИЗМЕНЕНО: +indices
-    }
-    t.root.mu.Unlock()
+		var child *Node[T]
+		if childIdx >= 0 {
+			child = t.root.Children[childIdx]
+		} else {
+			child = t.arena.alloc()
+			t.root.Keys = append(t.root.Keys, b.keyByte)
+			t.root.Children = append(t.root.Children, child)
+			t.root.dirty.Store(true)
+			t.dirtyNodes.Add(1)
+		}
+		work = append(work, subtreeWork{child, b.items, b.indices}) // ИЗМЕНЕНО: +indices
+	}
+	t.root.mu.Unlock()
 
-    // Фаза 3: параллельная вставка в эксклюзивные поддеревья
-    // insertNode теперь возвращает error, записываем в itemErrs
-    // Race-free: каждый item[i] принадлежит ровно одному subtree →
-    //            itemErrs[indices[j]] пишется ровно одной горутиной
-    var wg sync.WaitGroup
-    for _, w := range work {
-        wg.Add(1)
-        go func(child *Node[T], slice []T, indices []int) {
-            defer wg.Done()
-            for j, item := range slice {
-				//Тут  сложнее, пофиг отключим 
-                if _, err := t.insertNode(child, item, 1); err != nil {
-                    itemErrs[indices[j]] = err // уникальный индекс — mutex не нужен
-                }
-            }
-        }(w.child, w.items, w.indices)
-    }
-    wg.Wait()
+	// Фаза 3: параллельная вставка в эксклюзивные поддеревья
+	// insertNode теперь возвращает error, записываем в itemErrs
+	// Race-free: каждый item[i] принадлежит ровно одному subtree →
+	//            itemErrs[indices[j]] пишется ровно одной горутиной
+	var wg sync.WaitGroup
+	for _, w := range work {
+		wg.Add(1)
+		go func(child *Node[T], slice []T, indices []int) {
+			defer wg.Done()
+			for j, item := range slice {
+				//Тут  сложнее, пофиг отключим
+				if _, err := t.insertNode(child, item, 1); err != nil {
+					itemErrs[indices[j]] = err // уникальный индекс — mutex не нужен
+				}
+			}
+		}(w.child, w.items, w.indices)
+	}
+	wg.Wait()
 
-    // Фаза 4: maps/cache update ТОЛЬКО для успешных элементов
-    // было в Phase 1 (до дерева), теперь после и с фильтрацией
-    // Используем atomic.Uint64 вместо mutex для счётчика — нет contention
-    var successCount atomic.Uint64
+	// Фаза 4: maps/cache update ТОЛЬКО для успешных элементов
+	// было в Phase 1 (до дерева), теперь после и с фильтрацией
+	// Используем atomic.Uint64 вместо mutex для счётчика — нет contention
+	var successCount atomic.Uint64
 
-    numWorkers := runtime.NumCPU()
-    if numWorkers > len(items) {
-        numWorkers = len(items)
-    }
-    chunkSize := (len(items) + numWorkers - 1) / numWorkers
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(items) {
+		numWorkers = len(items)
+	}
+	chunkSize := (len(items) + numWorkers - 1) / numWorkers
 
-    var wg2 sync.WaitGroup
-    for i := 0; i < numWorkers; i++ {
-        start := i * chunkSize
-        if start >= len(items) {
-            break
-        }
-        end := start + chunkSize
-        if end > len(items) {
-            end = len(items)
-        }
-        wg2.Add(1)
-        // Каждая горутина работает со своим chunk itemErrs — нет contention
-        go func(chunk []T, errs []error) {
-            defer wg2.Done()
-            local := uint64(0)
-            for j, item := range chunk {
-                if errs[j] == nil { // пропускаем failed items
-                    t.items.Store(item.ID(), item)
-                    t.cache.put(item.ID(), item)
-                    if t.topNCache != nil {
-                        t.topNCache.TryInsert(item)
-                    }
-					
+	var wg2 sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		if start >= len(items) {
+			break
+		}
+		end := start + chunkSize
+		if end > len(items) {
+			end = len(items)
+		}
+		wg2.Add(1)
+		// Каждая горутина работает со своим chunk itemErrs — нет contention
+		go func(chunk []T, errs []error) {
+			defer wg2.Done()
+			local := uint64(0)
+			for j, item := range chunk {
+				if errs[j] == nil { // пропускаем failed items
+					t.items.Store(item.ID(), item)
+					t.cache.put(item.ID(), item)
+					if t.topNCache != nil {
+						t.topNCache.TryInsert(item)
+					}
+
 					// Обновляем key index
 					t.keyIndex.Store(item.Key(), item.ID())
-					
+
 					if t.trackDirty.Load() {
 						t.dirtyMu.Lock()
 						k := item.Key()
@@ -603,142 +604,142 @@ func (t *Tree[T]) insertBatchParallel(items []T) []error {
 						delete(t.deletedKeys, k) // если был удалён — отменяем
 						t.dirtyMu.Unlock()
 					}
-					
-                    local++
-                }
-            }
-            successCount.Add(local)
-        }(items[start:end], itemErrs[start:end])
-    }
-    wg2.Wait()
 
-    // itemCount только для успешных, не для всех
+					local++
+				}
+			}
+			successCount.Add(local)
+		}(items[start:end], itemErrs[start:end])
+	}
+	wg2.Wait()
+
+	// itemCount только для успешных, не для всех
 	//TODO: некорректно считает метрику после загрузки (игнорит insertNew в t.insertNode)
-    n := successCount.Load()
-    t.itemCount.Add(n)
-    t.insertCount.Add(n)
-    t.rootCacheValid.Store(false)
+	n := successCount.Load()
+	t.itemCount.Add(n)
+	t.insertCount.Add(n)
+	t.rootCacheValid.Store(false)
 
-    // фильтрация — возвращаем nil если ошибок нет
-    var result []error
-    for _, err := range itemErrs {
-        if err != nil {
-            result = append(result, err)
-        }
-    }
-    return result
+	// фильтрация — возвращаем nil если ошибок нет
+	var result []error
+	for _, err := range itemErrs {
+		if err != nil {
+			result = append(result, err)
+		}
+	}
+	return result
 }
 
 // insertBatchMegaParallel для больших батчей
 // ИЗМЕНЕНО: порядок операций — дерево сначала, maps после и только для успешных
 func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
-    if len(items) == 0 {
-        return nil
-    }
+	if len(items) == 0 {
+		return nil
+	}
 
-    numCPU := runtime.NumCPU()
-    numWorkers := numCPU * 3
-    if numWorkers > 144 {
-        numWorkers = 144
-    }
-    if numWorkers > len(items) {
-        numWorkers = len(items)
-    }
+	numCPU := runtime.NumCPU()
+	numWorkers := numCPU * 3
+	if numWorkers > 144 {
+		numWorkers = 144
+	}
+	if numWorkers > len(items) {
+		numWorkers = len(items)
+	}
 
-    // itemErrs[i] = ошибка для items[i]
-    // Race-free: каждый item принадлежит ровно одной group →
-    //            горутина, обрабатывающая group, единственная пишет в gi.index
-    itemErrs := make([]error, len(items))
+	// itemErrs[i] = ошибка для items[i]
+	// Race-free: каждый item принадлежит ровно одной group →
+	//            горутина, обрабатывающая group, единственная пишет в gi.index
+	itemErrs := make([]error, len(items))
 
-    // groupItem теперь хранит index для трекинга ошибок
-    // groups [][]groupItem с индексом позиции в items[]
-    type groupItem struct {
-        item  T
-        index int // ДОБАВЛЕНО: позиция в оригинальном items[]
-    }
+	// groupItem теперь хранит index для трекинга ошибок
+	// groups [][]groupItem с индексом позиции в items[]
+	type groupItem struct {
+		item  T
+		index int // ДОБАВЛЕНО: позиция в оригинальном items[]
+	}
 
-    // Phase 1 теперь группировка (было: maps update)
-    // Порядок изменён: tree first → только потом maps для успешных
-    groupSize := 256
-    if len(items) > 10000 {
-        groupSize = 4096
-    }
+	// Phase 1 теперь группировка (было: maps update)
+	// Порядок изменён: tree first → только потом maps для успешных
+	groupSize := 256
+	if len(items) > 10000 {
+		groupSize = 4096
+	}
 
-    groups := make([][]groupItem, groupSize)
-    for i, item := range items {
-        key := t.normalizeKey(item.Key())
-        var groupKey int
-        if groupSize == 256 {
-            groupKey = int(key[0])
-        } else {
-            groupKey = (int(key[0]) << 8) | int(key[1])
-        }
-        // сохраняем groupItem{item, i} вместо просто item
-        groups[groupKey] = append(groups[groupKey], groupItem{item, i})
-    }
+	groups := make([][]groupItem, groupSize)
+	for i, item := range items {
+		key := t.normalizeKey(item.Key())
+		var groupKey int
+		if groupSize == 256 {
+			groupKey = int(key[0])
+		} else {
+			groupKey = (int(key[0]) << 8) | int(key[1])
+		}
+		// сохраняем groupItem{item, i} вместо просто item
+		groups[groupKey] = append(groups[groupKey], groupItem{item, i})
+	}
 
-    // канал теперь передаёт []groupItem вместо []T
-    groupChan := make(chan []groupItem, groupSize)
-    for _, group := range groups {
-        if len(group) > 0 {
-            groupChan <- group
-        }
-    }
-    close(groupChan)
+	// канал теперь передаёт []groupItem вместо []T
+	groupChan := make(chan []groupItem, groupSize)
+	for _, group := range groups {
+		if len(group) > 0 {
+			groupChan <- group
+		}
+	}
+	close(groupChan)
 
-    numGroupWorkers := numCPU * 2
-    if numGroupWorkers > 96 {
-        numGroupWorkers = 96
-    }
+	numGroupWorkers := numCPU * 2
+	if numGroupWorkers > 96 {
+		numGroupWorkers = 96
+	}
 
-    // Фаза 2: параллельная вставка в дерево
-    // собираем ошибки в itemErrs[gi.index]
-    // Каждая горутина читает группы из канала и обрабатывает их последовательно.
-    // Элемент из группы i пишет только в itemErrs[gi.index] — уникальный индекс.
-    var wg sync.WaitGroup
-    for i := 0; i < numGroupWorkers; i++ {
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
-            for group := range groupChan {
-                for _, gi := range group {
-                    if _, err := t.insertNode(t.root, gi.item, 0); err != nil {
-                        itemErrs[gi.index] = err // уникальный индекс — race-free
-                    }
-                }
-            }
-        }()
-    }
-    wg.Wait()
+	// Фаза 2: параллельная вставка в дерево
+	// собираем ошибки в itemErrs[gi.index]
+	// Каждая горутина читает группы из канала и обрабатывает их последовательно.
+	// Элемент из группы i пишет только в itemErrs[gi.index] — уникальный индекс.
+	var wg sync.WaitGroup
+	for i := 0; i < numGroupWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for group := range groupChan {
+				for _, gi := range group {
+					if _, err := t.insertNode(t.root, gi.item, 0); err != nil {
+						itemErrs[gi.index] = err // уникальный индекс — race-free
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
 
-    // Фаза 3: maps/cache update ТОЛЬКО для успешных элементов
-    // было Phase 1 (до дерева), теперь после с фильтрацией по itemErrs
-    var successCount atomic.Uint64
+	// Фаза 3: maps/cache update ТОЛЬКО для успешных элементов
+	// было Phase 1 (до дерева), теперь после с фильтрацией по itemErrs
+	var successCount atomic.Uint64
 
-    chunkSize := (len(items) + numWorkers - 1) / numWorkers
-    var wg2 sync.WaitGroup
-    for i := 0; i < numWorkers; i++ {
-        start := i * chunkSize
-        if start >= len(items) {
-            break
-        }
-        end := start + chunkSize
-        if end > len(items) {
-            end = len(items)
-        }
-        wg2.Add(1)
-        go func(chunk []T, errs []error) {
-            defer wg2.Done()
-            local := uint64(0)
-            for j, item := range chunk {
-                if errs[j] == nil { // пропускаем failed items
-                    t.items.Store(item.ID(), item)
-                    t.cache.put(item.ID(), item)
-                    if t.topNCache != nil {
-                        t.topNCache.TryInsert(item)
-                    }
+	chunkSize := (len(items) + numWorkers - 1) / numWorkers
+	var wg2 sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		if start >= len(items) {
+			break
+		}
+		end := start + chunkSize
+		if end > len(items) {
+			end = len(items)
+		}
+		wg2.Add(1)
+		go func(chunk []T, errs []error) {
+			defer wg2.Done()
+			local := uint64(0)
+			for j, item := range chunk {
+				if errs[j] == nil { // пропускаем failed items
+					t.items.Store(item.ID(), item)
+					t.cache.put(item.ID(), item)
+					if t.topNCache != nil {
+						t.topNCache.TryInsert(item)
+					}
 					// Обновляем key index
-					t.keyIndex.Store(item.Key(), item.ID())					
+					t.keyIndex.Store(item.Key(), item.ID())
 					if t.trackDirty.Load() {
 						t.dirtyMu.Lock()
 						k := item.Key()
@@ -746,63 +747,63 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
 						delete(t.deletedKeys, k) // если был удалён — отменяем
 						t.dirtyMu.Unlock()
 					}
-                    local++
-                }
-            }
-            successCount.Add(local)
-        }(items[start:end], itemErrs[start:end])
-    }
-    wg2.Wait()
+					local++
+				}
+			}
+			successCount.Add(local)
+		}(items[start:end], itemErrs[start:end])
+	}
+	wg2.Wait()
 
-    // itemCount только для успешных
-    n := successCount.Load()
+	// itemCount только для успешных
+	n := successCount.Load()
 	//TODO: некорректно считает метрику после загрузки (игнорит insertNew в t.insertNode)
-    t.itemCount.Add(n)
-    t.insertCount.Add(n)
-    t.rootCacheValid.Store(false)
+	t.itemCount.Add(n)
+	t.insertCount.Add(n)
+	t.rootCacheValid.Store(false)
 
-    // Собираем non-nil ошибки
-    var result []error
-    for _, err := range itemErrs {
-        if err != nil {
-            result = append(result, err)
-        }
-    }
-    return result
+	// Собираем non-nil ошибки
+	var result []error
+	for _, err := range itemErrs {
+		if err != nil {
+			result = append(result, err)
+		}
+	}
+	return result
 }
 
 // insertNodeUnderGlobalLock - вставка БЕЗ per-node блокировок (вызывается под t.mu.Lock)
 func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) (bool, error) {
 	key := t.normalizeKey(item.Key())
-	
+
 	if depth >= t.maxDepth-1 {
 		idx := key[len(key)-1]
-		
+
 		for i, k := range node.Keys {
 			if k == idx {
 				child := node.Children[i]
 				existingID := child.Value.ID()
-				
+
 				// UPDATE: тот же ID — разрешаем обновить значение
-                if existingID == item.ID() {
-                    child.Value = item
-                    child.dirty.Store(true)
-                    node.dirty.Store(true)
-                    t.dirtyNodes.Add(1)
-                    return false, nil
-                }
-				
+				if existingID == item.ID() {
+					child.Value = item
+					child.dirty.Store(true)
+					node.dirty.Store(true)
+					t.dirtyNodes.Add(1)
+					return false, nil
+				}
+
 				// КОЛЛИЗИЯ: слот занят другим элементом — отказываем
-                // Дерево остаётся нетронутым, rollback не нужен
-                return false, &CollisionError{
-                    Slot:       idx,
-                    Depth:      depth,
-                    ExistingID: existingID,
-                    NewID:      item.ID(),
-                }
+				// Дерево остаётся нетронутым, rollback не нужен
+				return false, &CollisionError{
+					Slot:       idx,
+					Depth:      depth,
+					ExistingID: existingID,
+					NewID:      item.ID(),
+				}
 			}
 		}
-		
+
 		// Новый лист
 		child := t.arena.alloc()
 		child.IsLeaf = true
@@ -815,26 +816,26 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) (b
 		t.dirtyNodes.Add(1)
 		return true, nil
 	}
-	
+
 	// Промежуточный узел - без изменений
 	idx := key[depth]
 	for i, k := range node.Keys {
 		if k == idx {
 			insertedNew, err := t.insertNodeUnderGlobalLock(node.Children[i], item, depth+1)
-            if err == nil {
-                node.dirty.Store(true)
-                t.dirtyNodes.Add(1)
-            }
-            return insertedNew, err
+			if err == nil {
+				node.dirty.Store(true)
+				t.dirtyNodes.Add(1)
+			}
+			return insertedNew, err
 		}
 	}
-	
+
 	child := t.arena.alloc()
 	node.Keys = append(node.Keys, idx)
 	node.Children = append(node.Children, child)
 	node.dirty.Store(true)
 	t.dirtyNodes.Add(1)
-	
+
 	return t.insertNodeUnderGlobalLock(child, item, depth+1)
 }
 
@@ -842,40 +843,40 @@ func (t *Tree[T]) insertNodeUnderGlobalLock(node *Node[T], item T, depth int) (b
 func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) (bool, error) {
 	key := t.normalizeKey(item.Key())
 	node.mu.Lock()
-	
+
 	if depth >= t.maxDepth-1 {
 		idx := key[len(key)-1]
-		
+
 		for i, k := range node.Keys {
 			if k == idx {
 				child := node.Children[i]
 				node.mu.Unlock()
-				
+
 				child.mu.Lock()
-				
+
 				existingID := child.Value.ID()
 
-                // Это UPDATE того же элемента — разрешаем
-                if existingID == item.ID() {
-                    child.Value = item
-                    child.dirty.Store(true)
-                    child.mu.Unlock()
-                    node.dirty.Store(true)
-                    t.dirtyNodes.Add(1)
-                    return false, nil
-                }
-				
+				// Это UPDATE того же элемента — разрешаем
+				if existingID == item.ID() {
+					child.Value = item
+					child.dirty.Store(true)
+					child.mu.Unlock()
+					node.dirty.Store(true)
+					t.dirtyNodes.Add(1)
+					return false, nil
+				}
+
 				// Это КОЛЛИЗИЯ — отказываем
-                child.mu.Unlock()
-                return false, &CollisionError{
-                    Slot:       idx,
-                    Depth:      depth,
-                    ExistingID: existingID,
-                    NewID:      item.ID(),
-                }
+				child.mu.Unlock()
+				return false, &CollisionError{
+					Slot:       idx,
+					Depth:      depth,
+					ExistingID: existingID,
+					NewID:      item.ID(),
+				}
 			}
 		}
-		
+
 		// Новый лист
 		child := t.arena.alloc()
 		child.IsLeaf = true
@@ -889,92 +890,92 @@ func (t *Tree[T]) insertNode(node *Node[T], item T, depth int) (bool, error) {
 		node.mu.Unlock()
 		return true, nil
 	}
-	
+
 	// Промежуточный узел - без изменений
 	idx := key[depth]
 	for i, k := range node.Keys {
 		if k == idx {
 			child := node.Children[i]
 			node.mu.Unlock()
-			
+
 			insertedNew, err := t.insertNode(child, item, depth+1)
-            if err == nil {
-                node.dirty.Store(true)
-                t.dirtyNodes.Add(1)
-            }
-            return insertedNew, err
+			if err == nil {
+				node.dirty.Store(true)
+				t.dirtyNodes.Add(1)
+			}
+			return insertedNew, err
 		}
 	}
-	
+
 	child := t.arena.alloc()
 	node.Keys = append(node.Keys, idx)
 	node.Children = append(node.Children, child)
 	node.dirty.Store(true)
 	t.dirtyNodes.Add(1)
 	node.mu.Unlock()
-	
+
 	return t.insertNode(child, item, depth+1)
 }
 
 func (t *Tree[T]) Get(id uint64) (T, bool) {
-    count := t.getCount.Add(1)
+	count := t.getCount.Add(1)
 
-    if item, ok := t.cache.tryGet(id); ok {
-        t.cacheHits.Add(1)
-        if count%100 == 0 {     // один вызов на каждое кратное 100
-            t.cache.put(id, item)
-        }
-        return item, true
-    }
+	if item, ok := t.cache.tryGet(id); ok {
+		t.cacheHits.Add(1)
+		if count%100 == 0 { // один вызов на каждое кратное 100
+			t.cache.put(id, item)
+		}
+		return item, true
+	}
 
-    if item, ok := t.items.Load(id); ok {
-        //item := val.(T)
-        t.cache.put(id, item)
-        t.cacheMisses.Add(1)
-        return item, true
-    }
+	if item, ok := t.items.Load(id); ok {
+		//item := val.(T)
+		t.cache.put(id, item)
+		t.cacheMisses.Add(1)
+		return item, true
+	}
 
-    var zero T
-    t.cacheMisses.Add(1)
-    return zero, false
+	var zero T
+	t.cacheMisses.Add(1)
+	return zero, false
 }
 
 // ComputeRoot вычисляет корневой хеш (с автоматическим выбором стратегии)
 func (t *Tree[T]) ComputeRoot() [32]byte {
-    if t.rootCacheValid.Load() {
-        if val := t.cachedRoot.Load(); val != nil {
-            return val.([32]byte)
-        }
-    }
+	if t.rootCacheValid.Load() {
+		if val := t.cachedRoot.Load(); val != nil {
+			return val.([32]byte)
+		}
+	}
 
-    t.mu.RLock()
-    newRoot := t.computeNodeHash(t.root, 0, true)
-    t.mu.RUnlock()
+	t.mu.RLock()
+	newRoot := t.computeNodeHash(t.root, 0, true)
+	t.mu.RUnlock()
 
-    for attempts := 0; attempts < 16; attempts++ {
-        currentDirty := t.dirtyNodes.Load()
+	for attempts := 0; attempts < 16; attempts++ {
+		currentDirty := t.dirtyNodes.Load()
 
-        // CAS первый — только если успех, публикуем
-        if t.dirtyNodes.CompareAndSwap(currentDirty, 0) {
-            t.cachedRoot.Store(newRoot)
-            t.rootCacheValid.Store(true)
-            return newRoot
-        }
+		// CAS первый — только если успех, публикуем
+		if t.dirtyNodes.CompareAndSwap(currentDirty, 0) {
+			t.cachedRoot.Store(newRoot)
+			t.rootCacheValid.Store(true)
+			return newRoot
+		}
 
-        // CAS провалился → кто-то изменил дерево → пересчитываем
-        t.mu.RLock()
-        newRoot = t.computeNodeHash(t.root, 0, true)
-        t.mu.RUnlock()
-    }
+		// CAS провалился → кто-то изменил дерево → пересчитываем
+		t.mu.RLock()
+		newRoot = t.computeNodeHash(t.root, 0, true)
+		t.mu.RUnlock()
+	}
 
-    // Fallback под полным локом
-    t.mu.Lock()
-    defer t.mu.Unlock()
-    newRoot = t.computeNodeHash(t.root, 0, true)
-    t.cachedRoot.Store(newRoot)
-    t.rootCacheValid.Store(true)
-    t.dirtyNodes.Store(0)
-    return newRoot
+	// Fallback под полным локом
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	newRoot = t.computeNodeHash(t.root, 0, true)
+	t.cachedRoot.Store(newRoot)
+	t.rootCacheValid.Store(true)
+	t.dirtyNodes.Store(0)
+	return newRoot
 }
 
 // computeNodeHash - ЕДИНЫЙ метод с автоматическим параллелизмом
@@ -982,71 +983,71 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	if node == nil {
 		return [32]byte{}
 	}
-	
+
 	node.mu.RLock()
-	
+
 	// Если узел не грязный - возвращаем кеш
 	if !node.dirty.Load() && node.Hash != [32]byte{} {
 		hash := node.Hash
 		node.mu.RUnlock()
 		return hash
 	}
-	
+
 	// Для листьев - вычисляем хеш
 	if node.IsLeaf {
 		value := node.Value
 		node.mu.RUnlock()
-		
+
 		// Вычисляем хеш элемента
 		hash := value.Hash()
-		
+
 		// Обновляем узел
 		node.mu.Lock()
 		node.Hash = hash
 		node.dirty.Store(false)
 		node.mu.Unlock()
-		
+
 		return hash
 	}
-	
+
 	count := len(node.Keys)
 	if count == 0 {
 		node.mu.RUnlock()
 		return [32]byte{}
 	}
-	
+
 	// Проверяем, стоит ли использовать batch-хеширование листьев
 	// Условия:
 	// 1. Разрешен параллелизм
 	// 2. Глубина близка к листьям (depth >= maxDepth - 3)
 	// 3. Достаточно детей для эффективности (>= 8)
-	useBatchLeafHashing := allowParallel && 
+	useBatchLeafHashing := allowParallel &&
 		depth >= t.maxDepth-4 && // Было -3, делаем -4 (глубже в дерево)
-		count >= 6 &&             // Было 8, уменьшаем порог
-		runtime.NumCPU() > 8      // Было > 1, теперь только для серверов
-	
+		count >= 6 && // Было 8, уменьшаем порог
+		runtime.NumCPU() > 8 // Было > 1, теперь только для серверов
+
 	indices := make([]int, count)
 	for i := range indices {
 		indices[i] = i
 	}
-	
+
 	keys := make([]byte, count)
 	copy(keys, node.Keys)
 	children := make([]*Node[T], count)
 	copy(children, node.Children)
 	node.mu.RUnlock()
-	
+
 	// Сортировка индексов
 	slices.SortFunc(indices, func(a, b int) int {
 		return cmp.Compare(keys[a], keys[b])
 	})
-	
+
 	// Batch-хеширование листьев
 	var leafHashes map[*Node[T]][32]byte
 	if useBatchLeafHashing {
 		// Собираем все листья на следующем уровне
 		leaves := make([]*Node[T], 0, count*4) // Оценка: ~4 листа на ребенка
-		
+
 		for _, idx := range indices {
 			child := children[idx]
 			if child != nil {
@@ -1054,7 +1055,7 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 				child.mu.RLock()
 				isLeaf := child.IsLeaf
 				child.mu.RUnlock()
-				
+
 				if isLeaf {
 					leaves = append(leaves, child)
 				} else {
@@ -1063,16 +1064,16 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 				}
 			}
 		}
-		
+
 		// Хешируем все листья параллельно, если их достаточно
 		if len(leaves) >= 16 {
 			leafHashes = t.computeLeafHashesBatch(leaves)
 		}
 	}
-	
+
 	// Решаем, использовать ли параллелизм для промежуточных узлов
 	useParallel := allowParallel && depth < 2 && count >= 4 && runtime.NumCPU() > 1
-	
+
 	// Вычисляем хеши детей
 	//childHashes := make([][32]byte, count)
 	chPtr := childHashSlicePool.Get().(*[][32]byte)
@@ -1083,7 +1084,7 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	} else {
 		childHashes = (*chPtr)[:count]
 	}
-	
+
 	if useParallel {
 		// Параллельное вычисление промежуточных узлов
 		var wg sync.WaitGroup
@@ -1101,7 +1102,7 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 			childHashes[i] = t.computeNodeHashWithCache(children[idx], depth+1, false, leafHashes)
 		}
 	}
-	
+
 	// Хешируем результат
 	hasher := blake3HasherPool.Get().(*blake3.Hasher)
 	hasher.Reset()
@@ -1112,15 +1113,15 @@ func (t *Tree[T]) computeNodeHash(node *Node[T], depth int, allowParallel bool) 
 	var result [32]byte
 	copy(result[:], hasher.Sum(nil))
 	blake3HasherPool.Put(hasher)
-	
-	*chPtr = (*chPtr)[:0]                    // сбрасываем len, cap сохраняем
+
+	*chPtr = (*chPtr)[:0] // сбрасываем len, cap сохраняем
 	childHashSlicePool.Put(chPtr)
-	
+
 	node.mu.Lock()
 	node.Hash = result
 	node.dirty.Store(false)
 	node.mu.Unlock()
-	
+
 	return result
 }
 
@@ -1129,129 +1130,128 @@ func (t *Tree[T]) computeNodeHashWithCache(node *Node[T], depth int, allowParall
 	if node == nil {
 		return [32]byte{}
 	}
-	
+
 	// Проверяем кеш листьев
 	if leafCache != nil {
 		if hash, exists := leafCache[node]; exists {
 			return hash
 		}
 	}
-	
+
 	// Иначе используем обычную логику
 	return t.computeNodeHash(node, depth, allowParallel)
 }
 
-
 // collectLeaves итеративно собирает все листья из поддерева.
 // Explicit stack вместо рекурсии: нет frame allocations, нет риска stack overflow.
 func (t *Tree[T]) collectLeaves(root *Node[T], leaves *[]*Node[T]) {
-    if root == nil {
-        return
-    }
+	if root == nil {
+		return
+	}
 
-    // Pre-allocate stack: maxDepth=8, типичный branching factor 16-64,
-    // 64 слотов достаточно для большинства случаев без realloc.
-    stack := make([]*Node[T], 0, 64)
-    stack = append(stack, root)
+	// Pre-allocate stack: maxDepth=8, типичный branching factor 16-64,
+	// 64 слотов достаточно для большинства случаев без realloc.
+	stack := make([]*Node[T], 0, 64)
+	stack = append(stack, root)
 
-    for len(stack) > 0 {
-        // Pop: берём с конца (не с начала — дешевле, O(1) vs O(n))
-        top := len(stack) - 1
-        node := stack[top]
-        stack = stack[:top]
+	for len(stack) > 0 {
+		// Pop: берём с конца (не с начала — дешевле, O(1) vs O(n))
+		top := len(stack) - 1
+		node := stack[top]
+		stack = stack[:top]
 
-        node.mu.RLock()
-        isLeaf := node.IsLeaf
-        children := node.Children
-        node.mu.RUnlock()
+		node.mu.RLock()
+		isLeaf := node.IsLeaf
+		children := node.Children
+		node.mu.RUnlock()
 
-        if isLeaf {
-            *leaves = append(*leaves, node)
-            continue
-        }
+		if isLeaf {
+			*leaves = append(*leaves, node)
+			continue
+		}
 
-        // Push детей в обратном порядке, чтобы left-first traversal
-        // (первый ребёнок обрабатывается первым)
-        for i := len(children) - 1; i >= 0; i-- {
-            if children[i] != nil {
-                stack = append(stack, children[i])
-            }
-        }
-    }
+		// Push детей в обратном порядке, чтобы left-first traversal
+		// (первый ребёнок обрабатывается первым)
+		for i := len(children) - 1; i >= 0; i-- {
+			if children[i] != nil {
+				stack = append(stack, children[i])
+			}
+		}
+	}
 }
 
 func (t *Tree[T]) computeLeafHashesBatch(leaves []*Node[T]) map[*Node[T]][32]byte {
-    if len(leaves) == 0 {
-        return nil
-    }
+	if len(leaves) == 0 {
+		return nil
+	}
 
-    numWorkers := runtime.NumCPU()
-    if numWorkers > 32 {
-        numWorkers = 32
-    }
-    if len(leaves) < numWorkers*2 {
-        numWorkers = (len(leaves) + 1) / 2
-    }
+	numWorkers := runtime.NumCPU()
+	if numWorkers > 32 {
+		numWorkers = 32
+	}
+	if len(leaves) < numWorkers*2 {
+		numWorkers = (len(leaves) + 1) / 2
+	}
 
-    // результаты в плоском slice,
-    // каждый воркер пишет в свой эксклюзивный диапазон — нет мьютекса!
+	// результаты в плоском slice,
+	// каждый воркер пишет в свой эксклюзивный диапазон — нет мьютекса!
 	// нулевой contention во время параллельной фазы. Финальный merge — O(N) в одном потоке без блокировок.
-    resultHashes := make([][32]byte, len(leaves))
+	resultHashes := make([][32]byte, len(leaves))
 
-    chunkSize := (len(leaves) + numWorkers - 1) / numWorkers
-    var wg sync.WaitGroup
+	chunkSize := (len(leaves) + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
 
-    for i := 0; i < numWorkers; i++ {
-        start := i * chunkSize
-        if start >= len(leaves) {
-            break
-        }
-        end := start + chunkSize
-        if end > len(leaves) {
-            end = len(leaves)
-        }
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		if start >= len(leaves) {
+			break
+		}
+		end := start + chunkSize
+		if end > len(leaves) {
+			end = len(leaves)
+		}
 
-        wg.Add(1)
-        // Передаём subslice — горутин владеет только своим диапазоном
-        go func(chunk []*Node[T], out [][32]byte) {
-            defer wg.Done()
-            for i, leaf := range chunk {
-                if leaf == nil {
-                    continue
-                }
+		wg.Add(1)
+		// Передаём subslice — горутин владеет только своим диапазоном
+		go func(chunk []*Node[T], out [][32]byte) {
+			defer wg.Done()
+			for i, leaf := range chunk {
+				if leaf == nil {
+					continue
+				}
 
-                leaf.mu.RLock()
-                isDirty := leaf.dirty.Load()
-                value := leaf.Value
-                currentHash := leaf.Hash
-                leaf.mu.RUnlock()
+				leaf.mu.RLock()
+				isDirty := leaf.dirty.Load()
+				value := leaf.Value
+				currentHash := leaf.Hash
+				leaf.mu.RUnlock()
 
-                var hash [32]byte
-                if isDirty || currentHash == ([32]byte{}) {
-                    hash = value.Hash()
-                    leaf.mu.Lock()
-                    leaf.Hash = hash
-                    leaf.dirty.Store(false)
-                    leaf.mu.Unlock()
-                } else {
-                    hash = currentHash
-                }
+				var hash [32]byte
+				if isDirty || currentHash == ([32]byte{}) {
+					hash = value.Hash()
+					leaf.mu.Lock()
+					leaf.Hash = hash
+					leaf.dirty.Store(false)
+					leaf.mu.Unlock()
+				} else {
+					hash = currentHash
+				}
 
-                out[i] = hash // пишем в эксклюзивный диапазон, без lock
-            }
-        }(leaves[start:end], resultHashes[start:end])
-    }
+				out[i] = hash // пишем в эксклюзивный диапазон, без lock
+			}
+		}(leaves[start:end], resultHashes[start:end])
+	}
 
-    wg.Wait()
+	wg.Wait()
 
-    // Строим map однократно в одном потоке, после завершения всех горутин
-    results := make(map[*Node[T]][32]byte, len(leaves))
-    for i, leaf := range leaves {
-        if leaf != nil {
-            results[leaf] = resultHashes[i]
-        }
-    }
-    return results
+	// Строим map однократно в одном потоке, после завершения всех горутин
+	results := make(map[*Node[T]][32]byte, len(leaves))
+	for i, leaf := range leaves {
+		if leaf != nil {
+			results[leaf] = resultHashes[i]
+		}
+	}
+	return results
 }
 
 func (t *Tree[T]) Size() int {
@@ -1283,46 +1283,46 @@ func (t *Tree[T]) Clear() {
 	t.root = t.arena.alloc()
 	t.cache.clear()
 	t.rootCacheValid.Store(false)
-	
+
 	// Очищаем TopN кеши
 	if t.topNCache != nil {
 		t.topNCache.Clear()
 	}
-	
+
 	t.ResetDirtyTracking()
-	
+
 	t.dirtyNodes.Store(0)
 	t.deletedNodeCount.Store(0)
 }
 
-//Удаление и пересборка дерева, чтобы GC мог очистить удаленные элементы 
+// Удаление и пересборка дерева, чтобы GC мог очистить удаленные элементы
 func (t *Tree[T]) Compact() {
-    t.mu.Lock()
-    defer t.mu.Unlock()
-	
-    t.arena.reset()
-    t.root = t.arena.alloc()
-    t.deletedNodeCount.Store(0)
-    t.items.Range(func(_ uint64, item T) bool {
-        t.insertNodeUnderGlobalLock(t.root, item, 0)
-        return true
-    })
-    t.rootCacheValid.Store(false)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.arena.reset()
+	t.root = t.arena.alloc()
+	t.deletedNodeCount.Store(0)
+	t.items.Range(func(_ uint64, item T) bool {
+		t.insertNodeUnderGlobalLock(t.root, item, 0)
+		return true
+	})
+	t.rootCacheValid.Store(false)
 }
 
 type Stats struct {
-	TotalItems        int
-	DeletedNodes      int    
-	AllocatedNodes    int
-	CacheSize         int
-	DirtyNodes        uint64
-	InsertCount       uint64
-	DeleteCount       uint64 
-	GetCount          uint64
-	CacheHits         uint64
-	CacheMisses       uint64
-	CacheHitRate      float64
-	ComputeCount      uint64
+	TotalItems     int
+	DeletedNodes   int
+	AllocatedNodes int
+	CacheSize      int
+	DirtyNodes     uint64
+	InsertCount    uint64
+	DeleteCount    uint64
+	GetCount       uint64
+	CacheHits      uint64
+	CacheMisses    uint64
+	CacheHitRate   float64
+	ComputeCount   uint64
 }
 
 // GetStats возвращает полную статистику дерева
@@ -1335,18 +1335,18 @@ func (t *Tree[T]) GetStats() Stats {
 	}
 
 	return Stats{
-		TotalItems:        int(t.itemCount.Load()),
-		DeletedNodes:      int(t.deletedNodeCount.Load()), 
-		AllocatedNodes:    t.arena.allocated(),
-		CacheSize:         t.cache.size(),
-		DirtyNodes:        t.dirtyNodes.Load(),
-		InsertCount:       t.insertCount.Load(),
-		DeleteCount:       t.deleteCount.Load(),
-		GetCount:          t.getCount.Load(),
-		CacheHits:         hits,
-		CacheMisses:       misses,
-		CacheHitRate:      hitRate,
-		ComputeCount:      t.computeCount.Load(),
+		TotalItems:     int(t.itemCount.Load()),
+		DeletedNodes:   int(t.deletedNodeCount.Load()),
+		AllocatedNodes: t.arena.allocated(),
+		CacheSize:      t.cache.size(),
+		DirtyNodes:     t.dirtyNodes.Load(),
+		InsertCount:    t.insertCount.Load(),
+		DeleteCount:    t.deleteCount.Load(),
+		GetCount:       t.getCount.Load(),
+		CacheHits:      hits,
+		CacheMisses:    misses,
+		CacheHitRate:   hitRate,
+		ComputeCount:   t.computeCount.Load(),
 	}
 }
 
@@ -1388,47 +1388,47 @@ func (t *Tree[T]) Delete(id uint64) bool {
 	if !exists {
 		return false
 	}
-	
+
 	// Удаляем из sync.Map
 	t.items.Delete(id)
 	t.itemCount.Add(^uint64(0)) // Декремент (атомарно вычитаем 1)
-	
+
 	// Удаляем из cache
 	t.cache.delete(id)
-	
+
 	// Удаляем из TopN кешей
 	if t.topNCache != nil {
 		t.topNCache.Remove(item)
 	}
-	
+
 	// Помечаем элемент в дереве как удаленный
 	t.deleteNode(t.root, item, 0)
-	
+
 	// Инвалидируем корневой хеш
 	t.rootCacheValid.Store(false)
-	
+
 	// Удаляем из key index
-    t.keyIndex.Delete(item.Key())
-	
+	t.keyIndex.Delete(item.Key())
+
 	if t.trackDirty.Load() {
-        key := item.Key()
+		key := item.Key()
 		t.dirtyMu.Lock()
-        t.deletedKeys[key] = struct{}{}
-        delete(t.dirtyKeys, key)
-        t.dirtyMu.Unlock()
-    }
-	
+		t.deletedKeys[key] = struct{}{}
+		delete(t.dirtyKeys, key)
+		t.dirtyMu.Unlock()
+	}
+
 	return true
 }
 
 // GetByKey возвращает элемент по его [8]byte ключу
 func (t *Tree[T]) GetByKey(key [8]byte) (T, bool) {
-    idVal, ok := t.keyIndex.Load(key)
-    if !ok {
-        var zero T
-        return zero, false
-    }
-    return t.items.Load(idVal.(uint64))
+	idVal, ok := t.keyIndex.Load(key)
+	if !ok {
+		var zero T
+		return zero, false
+	}
+	return t.items.Load(idVal.(uint64))
 }
 
 // DeleteBatch удаляет несколько элементов
@@ -1436,31 +1436,31 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 	if len(ids) == 0 {
 		return 0
 	}
-	
+
 	deleted := 0
 	items := make([]T, 0, len(ids))
-	
+
 	// Собираем элементы для удаления
 	for _, id := range ids {
 		item, exists := t.items.Load(id)
 		if !exists {
 			continue
 		}
-		
+
 		items = append(items, item)
-		
+
 		// Удаляем из maps
 		t.items.Delete(id)
 		t.cache.delete(id)
-		
+
 		// Удаляем из TopN
 		if t.topNCache != nil {
 			t.topNCache.Remove(item)
 		}
-		
+
 		// Удаляем из key index
 		t.keyIndex.Delete(item.Key())
-		
+
 		if t.trackDirty.Load() {
 			key := item.Key()
 			t.dirtyMu.Lock()
@@ -1468,16 +1468,16 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 			delete(t.dirtyKeys, key)
 			t.dirtyMu.Unlock()
 		}
-		
+
 		deleted++
 	}
-	
+
 	if deleted == 0 {
 		return 0
 	}
-	
-	t.itemCount.Add(^uint64(deleted-1)) // Атомарно вычитаем deleted
-	
+
+	t.itemCount.Add(^uint64(deleted - 1)) // Атомарно вычитаем deleted
+
 	// Удаляем из структуры дерева
 	if len(items) < SmallBatchThreshold {
 		// Простая блокировка для малых батчей
@@ -1492,26 +1492,26 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 		if numWorkers > 16 {
 			numWorkers = 16
 		}
-		
+
 		// ВАЖНО: не больше воркеров, чем элементов!
 		if numWorkers > len(items) {
 			numWorkers = len(items)
 		}
-		
+
 		chunkSize := (len(items) + numWorkers - 1) / numWorkers
 		var wg sync.WaitGroup
-		
+
 		for i := 0; i < numWorkers; i++ {
 			start := i * chunkSize
 			if start >= len(items) {
 				break // Не запускаем лишние горутины
 			}
-			
+
 			end := start + chunkSize
 			if end > len(items) {
 				end = len(items)
 			}
-			
+
 			wg.Add(1)
 			go func(chunk []T) {
 				defer wg.Done()
@@ -1520,10 +1520,10 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 				}
 			}(items[start:end])
 		}
-		
+
 		wg.Wait()
 	}
-	
+
 	t.rootCacheValid.Store(false)
 	t.deleteCount.Add(uint64(deleted))
 	return deleted
@@ -1532,18 +1532,18 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 // deleteNode - ЕДИНЫЙ метод удаления с per-node блокировками
 func (t *Tree[T]) deleteNode(node *Node[T], item T, depth int) {
 	key := t.normalizeKey(item.Key())
-	
+
 	node.mu.Lock()
-	
+
 	if depth >= t.maxDepth-1 {
 		// Листовой уровень
 		idx := key[len(key)-1]
-		
+
 		for i, k := range node.Keys {
 			if k == idx {
 				child := node.Children[i]
 				node.mu.Unlock()
-				
+
 				child.mu.Lock()
 				if child.IsLeaf {
 					// Обнуляем значение и ставим deleted hash
@@ -1554,17 +1554,17 @@ func (t *Tree[T]) deleteNode(node *Node[T], item T, depth int) {
 					t.deletedNodeCount.Add(1)
 				}
 				child.mu.Unlock()
-				
+
 				node.dirty.Store(true)
 				t.dirtyNodes.Add(1)
 				return
 			}
 		}
-		
+
 		node.mu.Unlock()
 		return
 	}
-	
+
 	// Промежуточный узел
 	idx := key[depth]
 	for i, k := range node.Keys {
@@ -1577,7 +1577,7 @@ func (t *Tree[T]) deleteNode(node *Node[T], item T, depth int) {
 			return
 		}
 	}
-	
+
 	node.mu.Unlock()
 }
 
@@ -1597,10 +1597,10 @@ func (t *Tree[T]) countDeletedNodes(node *Node[T]) int {
 	if node == nil {
 		return 0
 	}
-	
+
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	
+
 	if node.IsLeaf {
 		// Проверяем ID вместо прямого сравнения
 		if node.Value.ID() == 0 {
@@ -1608,12 +1608,12 @@ func (t *Tree[T]) countDeletedNodes(node *Node[T]) int {
 		}
 		return 0
 	}
-	
+
 	count := 0
 	for _, child := range node.Children {
 		count += t.countDeletedNodes(child)
 	}
-	
+
 	return count
 }
 
@@ -1621,22 +1621,22 @@ func (t *Tree[T]) countDeletedNodes(node *Node[T]) int {
 // Ordered Access API (TopN)
 // ============================================
 
-//INFO: В обоих случаях GetTop - так как кеш один и порядок задан в конфиге 
+//INFO: В обоих случаях GetTop - так как кеш один и порядок задан в конфиге
 
-//В зависимости от типа кеша Min или Max
+// В зависимости от типа кеша Min или Max
 func (t *Tree[T]) GetTop() T {
 	var zero T
-	
+
 	if t.topNCache == nil {
 		return zero //[]T{}
 	}
-	
+
 	v, err := t.topNCache.GetFirst()
-	
+
 	if err == true {
-		return v 
+		return v
 	}
-	
+
 	return zero
 }
 
@@ -1646,7 +1646,7 @@ func (t *Tree[T]) GetMin() (T, bool) {
 		var zero T
 		return zero, false
 	}
-	
+
 	return t.topNCache.GetFirst()
 }
 
@@ -1656,7 +1656,7 @@ func (t *Tree[T]) GetMax() (T, bool) {
 		var zero T
 		return zero, false
 	}
-	
+
 	return t.topNCache.GetFirst()
 }
 
@@ -1666,7 +1666,7 @@ func (t *Tree[T]) GetTopMin(n int) []T {
 	if t.topNCache == nil {
 		return nil //[]T{}
 	}
-	
+
 	return t.topNCache.GetTop(n)
 }
 
@@ -1676,7 +1676,7 @@ func (t *Tree[T]) GetTopMax(n int) []T {
 	if t.topNCache == nil {
 		return nil //[]T{}
 	}
-	
+
 	return t.topNCache.GetTop(n)
 }
 
@@ -1703,7 +1703,7 @@ func (t *Tree[T]) IsTopNEnabled() bool {
 	if t.topNCache != nil {
 		return t.topNCache.IsEnabled()
 	}
-	
+
 	return false
 }
 
@@ -1711,8 +1711,8 @@ func (t *Tree[T]) IsTopNEnabled() bool {
 func (t *Tree[T]) GetTopNCapacity() int {
 	if t.topNCache == nil {
 		return 0
-	} 
-	
+	}
+
 	if !t.topNCache.IsEnabled() {
 		return 0
 	}
@@ -1729,17 +1729,17 @@ func (t *Tree[T]) ClearTopN() {
 // IterTopMin возвращает итератор для минимальных элементов
 // Итератор обходит элементы в порядке возрастания ключа
 func (t *Tree[T]) IterTopMin() *TopNIterator[T] {
-    if t.topNCache != nil {
-        return t.topNCache.GetIteratorMin()
-    }
-    return NewTopNIterator[T](nil)  // HasNext() → false, Next() → zero,false
+	if t.topNCache != nil {
+		return t.topNCache.GetIteratorMin()
+	}
+	return NewTopNIterator[T](nil) // HasNext() → false, Next() → zero,false
 }
 
 // IterTopMax возвращает итератор для максимальных элементов
 // Итератор обходит элементы в порядке убывания ключа
 func (t *Tree[T]) IterTopMax() *TopNIterator[T] {
-    if t.topNCache != nil {
-        return t.topNCache.GetIteratorMax()
-    }
-    return NewTopNIterator[T](nil)  // безопасный пустой итератор
+	if t.topNCache != nil {
+		return t.topNCache.GetIteratorMax()
+	}
+	return NewTopNIterator[T](nil) // безопасный пустой итератор
 }

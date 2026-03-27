@@ -1,14 +1,14 @@
 package merkletree
 
 import (
-	"runtime"
-	"testing"
-	"time"
-	"sync"
-	"os"
-	"sort"
 	"errors"
 	"math/rand"
+	"os"
+	"runtime"
+	"sort"
+	"sync"
+	"testing"
+	"time"
 )
 
 func TestTreeBasicOperations(t *testing.T) {
@@ -54,9 +54,9 @@ func TestTreeBatchInsert(t *testing.T) {
 
 	// Пакетная вставка
 	errs := tree.InsertBatch(accounts)
-    if len(errs) > 0 {
-        t.Fatalf("unexpected collisions in batch: %v", errs)
-    }
+	if len(errs) > 0 {
+		t.Fatalf("unexpected collisions in batch: %v", errs)
+	}
 
 	if tree.Size() != 1000 {
 		t.Errorf("Ожидалось 1000 аккаунтов, получено %d", tree.Size())
@@ -233,139 +233,139 @@ func TestTreeConcurrentGetAndRoot(t *testing.T) {
 }
 
 func TestRootChangesAfterMutation(t *testing.T) {
-    tree := New[*Account](DefaultConfig())
-    acc1 := NewAccount(1, StatusUser)
-    if err := tree.Insert(acc1); err != nil {
+	tree := New[*Account](DefaultConfig())
+	acc1 := NewAccount(1, StatusUser)
+	if err := tree.Insert(acc1); err != nil {
 		t.Fatalf("unexpected collision on insert ID=%d: %v", acc1.UID, err)
 	}
 
-    root1 := tree.ComputeRoot()
+	root1 := tree.ComputeRoot()
 
-    acc2 := NewAccount(2, StatusUser)
-    if err := tree.Insert(acc2); err != nil {
+	acc2 := NewAccount(2, StatusUser)
+	if err := tree.Insert(acc2); err != nil {
 		t.Fatalf("unexpected collision on insert ID=%d: %v", acc2.UID, err)
 	}
 
-    root2 := tree.ComputeRoot()
+	root2 := tree.ComputeRoot()
 
-    if root1 == root2 {
-        t.Error("Root hash должен измениться после вставки")
-    }
+	if root1 == root2 {
+		t.Error("Root hash должен измениться после вставки")
+	}
 }
 
 // TestCollisionIsDetected проверяет что коллизия возвращает ошибку
 // и НЕ перезаписывает существующий элемент
 func TestCollisionIsDetected(t *testing.T) {
-    // MaxDepth=3 + BigEndian: IDs 1 и 257 имеют одинаковый путь
-    // key[0]=0x00, key[1]=0x00, key[7]=0x01 для обоих
-    cfg := &Config{MaxDepth: 3, CacheSize: 1024, CacheShards: 4}
-    tree := New[*Account](cfg)
+	// MaxDepth=3 + BigEndian: IDs 1 и 257 имеют одинаковый путь
+	// key[0]=0x00, key[1]=0x00, key[7]=0x01 для обоих
+	cfg := &Config{MaxDepth: 3, CacheSize: 1024, CacheShards: 4}
+	tree := New[*Account](cfg)
 
-    // Первая вставка — должна пройти
-    acc1 := NewAccount(1, StatusUser)
-    if err := tree.Insert(acc1); err != nil {
-        t.Fatalf("первая вставка не должна давать ошибку: %v", err)
-    }
+	// Первая вставка — должна пройти
+	acc1 := NewAccount(1, StatusUser)
+	if err := tree.Insert(acc1); err != nil {
+		t.Fatalf("первая вставка не должна давать ошибку: %v", err)
+	}
 
-    // Вторая вставка с коллизионным ID — должна вернуть CollisionError
-    acc257 := NewAccount(257, StatusUser) // key[7] == 0x01, как у ID=1
-    err := tree.Insert(acc257)
-    if err == nil {
-        t.Fatal("ожидалась CollisionError, получили nil")
-    }
+	// Вторая вставка с коллизионным ID — должна вернуть CollisionError
+	acc257 := NewAccount(257, StatusUser) // key[7] == 0x01, как у ID=1
+	err := tree.Insert(acc257)
+	if err == nil {
+		t.Fatal("ожидалась CollisionError, получили nil")
+	}
 
-    var colErr *CollisionError
-    if !errors.As(err, &colErr) {
-        t.Fatalf("ожидался *CollisionError, получили %T: %v", err, err)
-    }
+	var colErr *CollisionError
+	if !errors.As(err, &colErr) {
+		t.Fatalf("ожидался *CollisionError, получили %T: %v", err, err)
+	}
 
-    t.Logf("коллизия обнаружена корректно: %v", colErr)
+	t.Logf("коллизия обнаружена корректно: %v", colErr)
 
-    // Проверяем что оригинальный элемент НЕ перезаписан
-    if tree.Size() != 1 {
-        t.Errorf("размер должен быть 1, получено %d", tree.Size())
-    }
+	// Проверяем что оригинальный элемент НЕ перезаписан
+	if tree.Size() != 1 {
+		t.Errorf("размер должен быть 1, получено %d", tree.Size())
+	}
 
-    got, ok := tree.Get(1)
-    if !ok {
-        t.Fatal("ID=1 должен существовать")
-    }
-    if got.UID != 1 {
-        t.Errorf("ID=1 должен быть нетронут, получен UID=%d", got.UID)
-    }
+	got, ok := tree.Get(1)
+	if !ok {
+		t.Fatal("ID=1 должен существовать")
+	}
+	if got.UID != 1 {
+		t.Errorf("ID=1 должен быть нетронут, получен UID=%d", got.UID)
+	}
 
-    // ID=257 не должен быть в дереве
-    _, ok = tree.Get(257)
-    if ok {
-        t.Error("ID=257 не должен быть в дереве после коллизии")
-    }
+	// ID=257 не должен быть в дереве
+	_, ok = tree.Get(257)
+	if ok {
+		t.Error("ID=257 не должен быть в дереве после коллизии")
+	}
 }
 
 // TestUpdateSameIDIsNotCollision проверяет что обновление того же ID
 // не считается коллизией
 func TestUpdateSameIDIsNotCollision(t *testing.T) {
-    tree := New[*Account](DefaultConfig())
+	tree := New[*Account](DefaultConfig())
 
-    acc := NewAccount(42, StatusUser)
-    if err := tree.Insert(acc); err != nil {
-        t.Fatalf("первая вставка: %v", err)
-    }
+	acc := NewAccount(42, StatusUser)
+	if err := tree.Insert(acc); err != nil {
+		t.Fatalf("первая вставка: %v", err)
+	}
 
-    //StatusMM — любой статус отличный от StatusUser, чтобы убедиться что UPDATE прошёл
-    accUpdated := NewAccount(42, StatusMM)
-    if err := tree.Insert(accUpdated); err != nil {
-        t.Fatalf("UPDATE того же ID не должен давать коллизию: %v", err)
-    }
+	//StatusMM — любой статус отличный от StatusUser, чтобы убедиться что UPDATE прошёл
+	accUpdated := NewAccount(42, StatusMM)
+	if err := tree.Insert(accUpdated); err != nil {
+		t.Fatalf("UPDATE того же ID не должен давать коллизию: %v", err)
+	}
 
-    got, _ := tree.Get(42)
+	got, _ := tree.Get(42)
 
-    if got.Status != StatusMM {
-        t.Errorf("UPDATE должен обновить значение, ожидался StatusMM, получен %v", got.Status)
-    }
+	if got.Status != StatusMM {
+		t.Errorf("UPDATE должен обновить значение, ожидался StatusMM, получен %v", got.Status)
+	}
 }
 
 // TestBatchCollisionPartialSuccess проверяет что при коллизии в батче
 // успешные элементы вставляются, коллизионные — нет
 func TestBatchCollisionPartialSuccess(t *testing.T) {
-    cfg := &Config{MaxDepth: 3, CacheSize: 1024, CacheShards: 4}
-    tree := New[*Account](cfg)
+	cfg := &Config{MaxDepth: 3, CacheSize: 1024, CacheShards: 4}
+	tree := New[*Account](cfg)
 
-    // ID=1 уже в дереве
-    if err := tree.Insert(NewAccount(1, StatusUser)); err != nil {
-        t.Fatal(err)
-    }
+	// ID=1 уже в дереве
+	if err := tree.Insert(NewAccount(1, StatusUser)); err != nil {
+		t.Fatal(err)
+	}
 
-    // Батч: ID=2 (чистый), ID=257 (коллизия с ID=1), ID=3 (чистый)
-    batch := []*Account{
-        NewAccount(2, StatusUser),   // чистый
-        NewAccount(257, StatusUser), // коллизия: key[7]=0x01 как у ID=1
-        NewAccount(3, StatusUser),   // чистый
-    }
+	// Батч: ID=2 (чистый), ID=257 (коллизия с ID=1), ID=3 (чистый)
+	batch := []*Account{
+		NewAccount(2, StatusUser),   // чистый
+		NewAccount(257, StatusUser), // коллизия: key[7]=0x01 как у ID=1
+		NewAccount(3, StatusUser),   // чистый
+	}
 
-    errs := tree.InsertBatch(batch)
+	errs := tree.InsertBatch(batch)
 
-    // Ровно одна ошибка
-    if len(errs) != 1 {
-        t.Errorf("ожидалась 1 ошибка, получено %d: %v", len(errs), errs)
-    }
+	// Ровно одна ошибка
+	if len(errs) != 1 {
+		t.Errorf("ожидалась 1 ошибка, получено %d: %v", len(errs), errs)
+	}
 
-    // Размер: 1 (существующий) + 2 (успешные из батча) = 3
-    if tree.Size() != 3 {
-        t.Errorf("ожидалось 3 элемента, получено %d", tree.Size())
-    }
+	// Размер: 1 (существующий) + 2 (успешные из батча) = 3
+	if tree.Size() != 3 {
+		t.Errorf("ожидалось 3 элемента, получено %d", tree.Size())
+	}
 
-    // ID=2 и ID=3 должны быть в дереве
-    if _, ok := tree.Get(2); !ok {
-        t.Error("ID=2 должен быть вставлен")
-    }
-    if _, ok := tree.Get(3); !ok {
-        t.Error("ID=3 должен быть вставлен")
-    }
+	// ID=2 и ID=3 должны быть в дереве
+	if _, ok := tree.Get(2); !ok {
+		t.Error("ID=2 должен быть вставлен")
+	}
+	if _, ok := tree.Get(3); !ok {
+		t.Error("ID=3 должен быть вставлен")
+	}
 
-    // ID=257 не должен быть в дереве
-    if _, ok := tree.Get(257); ok {
-        t.Error("ID=257 не должен быть в дереве после коллизии")
-    }
+	// ID=257 не должен быть в дереве
+	if _, ok := tree.Get(257); ok {
+		t.Error("ID=257 не должен быть в дереве после коллизии")
+	}
 }
 
 // ============================================
@@ -426,7 +426,7 @@ func TestMarkDirty(t *testing.T) {
 		if !ok {
 			t.Fatalf("Account %d not found", id)
 		}
-		acc.Status = status  // мутируем через указатель — items видит изменение
+		acc.Status = status // мутируем через указатель — items видит изменение
 		ids = append(ids, id)
 	}
 
@@ -518,7 +518,7 @@ func TestMarkDirty(t *testing.T) {
 	// Корень должен совпасть
 	assertRootEqual(t, "markdirty restore", finalRoot, mgr2.ComputeGlobalRoot())
 	t.Logf("✓ All %d mutations restored correctly", len(mutations)+1)
-} 
+}
 
 func TestMarkDirtyPathInvalidation(t *testing.T) {
 	cfg := DefaultConfig()
@@ -855,5 +855,141 @@ func TestRestoreDoesNotIncreaseSizeOnUpdates(t *testing.T) {
 	fullRoot := mgr2.ComputeGlobalRoot()
 	if fullRoot != sourceRoot {
 		t.Fatalf("[FULL] root=%x, want sourceRoot=%x", fullRoot[:8], sourceRoot[:8])
+	}
+}
+
+
+// excludedConfig возвращает конфиг с ExcludeState: true
+func excludedConfig() *Config {
+	cfg := DefaultConfig()
+	cfg.ExcludeState = true
+	return cfg
+}
+
+// Дерево с ExcludeState не меняет GlobalRoot при добавлении в менеджер
+func TestExcludeStateFromGlobalRoot(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+
+	normalTree, _ := CreateTreeWithConfig[*Account](mgr, "normal", DefaultConfig())
+	for i := uint64(0); i < 50; i++ {
+		normalTree.Insert(NewAccountDeterministic(i, StatusUser))
+	}
+	rootBefore := mgr.ComputeGlobalRoot()
+
+	// Добавляем excluded-дерево с данными
+	excludedTree, _ := CreateTreeWithConfig[*Account](mgr, "excluded", excludedConfig())
+	for i := uint64(100); i < 150; i++ {
+		excludedTree.Insert(NewAccountDeterministic(i, StatusVIP))
+	}
+	rootAfter := mgr.ComputeGlobalRoot()
+
+	if rootBefore != rootAfter {
+		t.Error("GlobalRoot не должен меняться при добавлении дерева с ExcludeState: true")
+	}
+}
+
+// Вставка в excluded-дерево не меняет GlobalRoot
+func TestExcludeStateRootStableOnInsert(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+
+	normalTree, _ := CreateTreeWithConfig[*Account](mgr, "normal", DefaultConfig())
+	for i := uint64(0); i < 50; i++ {
+		normalTree.Insert(NewAccountDeterministic(i, StatusUser))
+	}
+	excludedTree, _ := CreateTreeWithConfig[*Account](mgr, "cache", excludedConfig())
+	excludedTree.Insert(NewAccountDeterministic(999, StatusSystem))
+
+	rootBefore := mgr.ComputeGlobalRoot()
+
+	for i := uint64(1000); i < 1050; i++ {
+		excludedTree.Insert(NewAccountDeterministic(i, StatusSystem))
+	}
+	mgr.InvalidateTreeRoot("cache")
+	rootAfter := mgr.ComputeGlobalRoot()
+
+	if rootBefore != rootAfter {
+		t.Error("GlobalRoot не должен меняться при изменении дерева с ExcludeState: true")
+	}
+}
+
+// Вставка в обычное дерево всё ещё меняет GlobalRoot (санити-чек)
+func TestExcludeStateNormalTreeAffectsRoot(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+
+	normalTree, _ := CreateTreeWithConfig[*Account](mgr, "normal", DefaultConfig())
+	for i := uint64(0); i < 50; i++ {
+		normalTree.Insert(NewAccountDeterministic(i, StatusUser))
+	}
+	rootBefore := mgr.ComputeGlobalRoot()
+
+	normalTree.Insert(NewAccountDeterministic(9999, StatusVIP))
+	mgr.InvalidateTreeRoot("normal")
+	rootAfter := mgr.ComputeGlobalRoot()
+
+	if rootBefore == rootAfter {
+		t.Error("GlobalRoot должен измениться при вставке в обычное дерево")
+	}
+}
+
+// Если все деревья excluded — GlobalRoot нулевой
+func TestExcludeStateOnlyExcludedTrees(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+
+	tree, _ := CreateTreeWithConfig[*Account](mgr, "all_excluded", excludedConfig())
+	for i := uint64(0); i < 20; i++ {
+		tree.Insert(NewAccountDeterministic(i, StatusUser))
+	}
+
+	root := mgr.ComputeGlobalRoot()
+	var zero [32]byte
+	if root != zero {
+		t.Error("GlobalRoot должен быть нулевым, если все деревья имеют ExcludeState: true")
+	}
+}
+
+// excluded-дерево всё ещё видно в ListTrees и TreeExists
+func TestExcludeStateVisibleInManager(t *testing.T) {
+	mgr := NewUniversalManager(DefaultConfig())
+
+	CreateTreeWithConfig[*Account](mgr, "normal", DefaultConfig())
+	CreateTreeWithConfig[*Account](mgr, "excluded", excludedConfig())
+
+	trees := mgr.ListTrees()
+	if len(trees) != 2 {
+		t.Errorf("ListTrees должен вернуть 2 дерева, получено %d", len(trees))
+	}
+	if !mgr.TreeExists("excluded") {
+		t.Error("excluded-дерево должно быть доступно через TreeExists")
+	}
+}
+
+// GlobalRoot при смешанных деревьях совпадает с GlobalRoot менеджера,
+// у которого только normal-деревья с теми же данными
+func TestExcludeStateMixedGlobalRoot(t *testing.T) {
+	// Эталон: только normal-деревья
+	mgrClean := NewUniversalManager(DefaultConfig())
+	t1, _ := CreateTreeWithConfig[*Account](mgrClean, "users", DefaultConfig())
+	t2, _ := CreateTreeWithConfig[*Balance](mgrClean, "balances", DefaultConfig())
+	for i := uint64(0); i < 30; i++ {
+		t1.Insert(NewAccountDeterministic(i, StatusUser))
+		t2.Insert(NewBalance(i, 1, 1000, 0))
+	}
+	expectedRoot := mgrClean.ComputeGlobalRoot()
+
+	// Тестируемый: те же данные + excluded-дерево с другими данными
+	mgrMixed := NewUniversalManager(DefaultConfig())
+	u1, _ := CreateTreeWithConfig[*Account](mgrMixed, "users", DefaultConfig())
+	u2, _ := CreateTreeWithConfig[*Balance](mgrMixed, "balances", DefaultConfig())
+	excl, _ := CreateTreeWithConfig[*Account](mgrMixed, "sessions", excludedConfig())
+	for i := uint64(0); i < 30; i++ {
+		u1.Insert(NewAccountDeterministic(i, StatusUser))
+		u2.Insert(NewBalance(i, 1, 1000, 0))
+		excl.Insert(NewAccountDeterministic(i+500, StatusSystem))
+	}
+	actualRoot := mgrMixed.ComputeGlobalRoot()
+
+	if expectedRoot != actualRoot {
+		t.Errorf("GlobalRoot не совпадает:\n  ожидался:  %x\n  получен:   %x",
+			expectedRoot[:8], actualRoot[:8])
 	}
 }

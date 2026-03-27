@@ -1,9 +1,9 @@
 package merkletree
 
 import (
+	"math/rand"
 	"testing"
 	"time"
-	"math/rand"
 )
 
 // Бенчмарки
@@ -90,25 +90,25 @@ func BenchmarkTreeComputeRoot(b *testing.B) {
 }
 
 func BenchmarkConcurrentGetAndRootHighContention(b *testing.B) {
-    tree := New[*Account](DefaultConfig())
-    // Заполняем большим количеством элементов
-    for i := uint64(0); i < 500_000; i++ {
-        tree.Insert(NewAccount(i, StatusUser))
-    }
+	tree := New[*Account](DefaultConfig())
+	// Заполняем большим количеством элементов
+	for i := uint64(0); i < 500_000; i++ {
+		tree.Insert(NewAccount(i, StatusUser))
+	}
 
-    b.ResetTimer()
-    b.ReportAllocs()
+	b.ResetTimer()
+	b.ReportAllocs()
 
-    b.RunParallel(func(pb *testing.PB) {
-        rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(b.N)))
-        for pb.Next() {
-            uid := uint64(rng.Intn(500_000))
-            _, _ = tree.Get(uid)
+	b.RunParallel(func(pb *testing.PB) {
+		rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(b.N)))
+		for pb.Next() {
+			uid := uint64(rng.Intn(500_000))
+			_, _ = tree.Get(uid)
 
-            // 1% шанс вызвать ComputeRoot (симулируем CometBFT finality)
-            if rng.Intn(100) == 0 {
-                _ = tree.ComputeRoot()
-            }
-        }
-    })
+			// 1% шанс вызвать ComputeRoot (симулируем CometBFT finality)
+			if rng.Intn(100) == 0 {
+				_ = tree.ComputeRoot()
+			}
+		}
+	})
 }

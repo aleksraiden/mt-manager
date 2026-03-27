@@ -24,16 +24,16 @@ type UniversalManager struct {
 type TreeOptions struct {
 	// TopN - количество топ элементов для этого дерева (0 = отключено)
 	// Если не указано, используется значение из Config
-	TopN 		*int
-	
+	TopN *int
+
 	// CacheSize - размер кеша для этого дерева (0 = отключено)
 	// Если не указано, используется значение из Config
-	CacheSize 	*int
-	
+	CacheSize *int
+
 	// CacheShards - количество шардов кеша для этого дерева
 	// Если не указано, используется значение из Config
 	CacheShards *uint
-	
+
 	KeyEncoding *KeyOrder
 }
 
@@ -58,7 +58,7 @@ func NewUniversalManager(cfg *Config) *UniversalManager {
 // NewUniversalManagerWithSnapshot создает менеджер с поддержкой снапшотов
 func NewUniversalManagerWithSnapshot(cfg *Config, snapshotPath string) (*UniversalManager, error) {
 	mgr := NewUniversalManager(cfg)
-	
+
 	if snapshotPath != "" {
 		snapshotMgr, err := NewSnapshotManager(snapshotPath)
 		if err != nil {
@@ -66,7 +66,7 @@ func NewUniversalManagerWithSnapshot(cfg *Config, snapshotPath string) (*Univers
 		}
 		mgr.snapshotMgr = snapshotMgr
 	}
-	
+
 	return mgr, nil
 }
 
@@ -86,14 +86,13 @@ func CreateTreeWithConfig[T Hashable](m *UniversalManager, name string, cfg *Con
 
 	tree := New[T](cfg)
 	tree.name = name
-	
+
 	wrapped := &TypedTree[T]{Tree: tree}
 	m.trees[name] = wrapped
 	m.globalRootDirty = true
 
 	return tree, nil
 }
-
 
 // GetTree возвращает дерево по имени с нужным типом
 func GetTree[T Hashable](m *UniversalManager, name string) (*Tree[T], bool) {
@@ -160,6 +159,9 @@ func (m *UniversalManager) ComputeGlobalRoot() [32]byte {
 	if !m.globalRootDirty {
 		needsUpdate := false
 		for name, tree := range m.trees {
+			if tree.isStateExcluded() {
+				continue
+			}
 			cachedRoot, exists := m.treeRootCache[name]
 			if !exists {
 				needsUpdate = true
@@ -189,6 +191,9 @@ func (m *UniversalManager) ComputeGlobalRoot() [32]byte {
 	if !m.globalRootDirty {
 		needsUpdate := false
 		for name, tree := range m.trees {
+			if tree.isStateExcluded() {
+				continue
+			}
 			cachedRoot, exists := m.treeRootCache[name]
 			if !exists {
 				needsUpdate = true
@@ -215,7 +220,10 @@ func (m *UniversalManager) ComputeGlobalRoot() [32]byte {
 
 	// Получаем отсортированные имена деревьев для детерминизма
 	names := make([]string, 0, len(m.trees))
-	for name := range m.trees {
+	for name, tree := range m.trees {
+		if tree.isStateExcluded() {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -262,9 +270,9 @@ func (m *UniversalManager) computeMerkleRoot(hashes [][32]byte) [32]byte {
 
 			var parentHash [32]byte
 			copy(parentHash[:], hasher.Sum(nil))
-			
+
 			blake3HasherPool.Put(hasher)
-			
+
 			nextLevel = append(nextLevel, parentHash)
 		}
 
@@ -291,47 +299,47 @@ func (m *UniversalManager) InvalidateTreeRoot(treeName string) {
 
 // GetMerkleProof возвращает Merkle proof для конкретного дерева
 func (m *UniversalManager) GetMerkleProof(treeName string) (*MerkleProof, error) {
-    // ComputeGlobalRoot сам управляет своими блокировками
-    globalRoot := m.ComputeGlobalRoot()
+	// ComputeGlobalRoot сам управляет своими блокировками
+	globalRoot := m.ComputeGlobalRoot()
 
-    m.mu.RLock()
-    defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-    if _, exists := m.trees[treeName]; !exists {
-        return nil, fmt.Errorf("дерево '%s' не найдено", treeName)
-    }
+	if _, exists := m.trees[treeName]; !exists {
+		return nil, fmt.Errorf("дерево '%s' не найдено", treeName)
+	}
 
-    names := make([]string, 0, len(m.trees))
-    for name := range m.trees {
-        names = append(names, name)
-    }
-    sort.Strings(names)
+	names := make([]string, 0, len(m.trees))
+	for name := range m.trees {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
-    targetIndex := -1
-    for i, name := range names {
-        if name == treeName {
-            targetIndex = i
-            break
-        }
-    }
-    if targetIndex == -1 {
-        return nil, fmt.Errorf("дерево '%s' не найдено в индексе", treeName)
-    }
+	targetIndex := -1
+	for i, name := range names {
+		if name == treeName {
+			targetIndex = i
+			break
+		}
+	}
+	if targetIndex == -1 {
+		return nil, fmt.Errorf("дерево '%s' не найдено в индексе", treeName)
+	}
 
-    roots := make([][32]byte, len(names))
-    for i, name := range names {
-        roots[i] = m.trees[name].ComputeRoot()
-    }
+	roots := make([][32]byte, len(names))
+	for i, name := range names {
+		roots[i] = m.trees[name].ComputeRoot()
+	}
 
-    proofPath, isLeft := m.computeProofPath(roots, targetIndex)
+	proofPath, isLeft := m.computeProofPath(roots, targetIndex)
 
-    return &MerkleProof{
-        TreeName:   treeName,
-        TreeRoot:   roots[targetIndex],
-        ProofPath:  proofPath,
-        IsLeft:     isLeft,
-        GlobalRoot: globalRoot, // ← pre-computed, без рекурсивной блокировки
-    }, nil
+	return &MerkleProof{
+		TreeName:   treeName,
+		TreeRoot:   roots[targetIndex],
+		ProofPath:  proofPath,
+		IsLeft:     isLeft,
+		GlobalRoot: globalRoot, // ← pre-computed, без рекурсивной блокировки
+	}, nil
 }
 
 // computeProofPath вычисляет proof path для элемента по индексу
@@ -585,21 +593,21 @@ func (ti TreeInfo) String() string {
 // GetAllTreesInfo возвращает информацию обо всех деревьях
 func (m *UniversalManager) GetAllTreesInfo() []TreeInfo {
 	m.mu.RLock()
-    defer m.mu.RUnlock()
+	defer m.mu.RUnlock()
 
-    infos := make([]TreeInfo, 0, len(m.trees))
-    for name, tree := range m.trees {
-        stats := tree.GetStats()
-        root := tree.ComputeRoot() // ComputeRoot использует свои внутренние локи, не m.mu
-        infos = append(infos, TreeInfo{
-            Name:      name,
-            Size:      stats.TotalItems,
-            Nodes:     stats.AllocatedNodes,
-            CacheSize: stats.CacheSize,
-            Root:      root,
-        })
-    }
-    return infos
+	infos := make([]TreeInfo, 0, len(m.trees))
+	for name, tree := range m.trees {
+		stats := tree.GetStats()
+		root := tree.ComputeRoot() // ComputeRoot использует свои внутренние локи, не m.mu
+		infos = append(infos, TreeInfo{
+			Name:      name,
+			Size:      stats.TotalItems,
+			Nodes:     stats.AllocatedNodes,
+			CacheSize: stats.CacheSize,
+			Root:      root,
+		})
+	}
+	return infos
 }
 
 // SetDefaultConfig устанавливает конфигурацию по умолчанию для новых деревьев
@@ -625,10 +633,10 @@ func (m *UniversalManager) CreateSnapshot() ([32]byte, error) {
 // CreateCheckpoint создает полный снапшот принудительно,
 // независимо от настройки TrackDirty
 func (m *UniversalManager) CreateCheckpoint() ([32]byte, error) {
-    if m.snapshotMgr == nil {
-        return [32]byte{}, fmt.Errorf("snapshot manager not initialized")
-    }
-    return m.snapshotMgr.CreateCheckpoint(m)
+	if m.snapshotMgr == nil {
+		return [32]byte{}, fmt.Errorf("snapshot manager not initialized")
+	}
+	return m.snapshotMgr.CreateCheckpoint(m)
 }
 
 // LoadFromSnapshot загружает снапшот
@@ -718,14 +726,14 @@ func (m *UniversalManager) IsSnapshotEnabled() bool {
 	return m.snapshotMgr != nil
 }
 
-//Проверка 
+// Проверка
 func (m *UniversalManager) allTreesTrackDirty() bool {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    for _, tree := range m.trees {
-        if !tree.isDirtyTrackingEnabled() {
-            return false
-        }
-    }
-    return true
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, tree := range m.trees {
+		if !tree.isDirtyTrackingEnabled() {
+			return false
+		}
+	}
+	return true
 }

@@ -76,9 +76,9 @@ func TestTreeRangeQueryBoundaries(t *testing.T) {
 		includeEnd    bool
 		expectedCount int
 	}{
-		{"[200, 400)", 200, 400, true, false, 2}, // 200, 300
-		{"(200, 400]", 200, 400, false, true, 2}, // 300, 400
-		{"[200, 400]", 200, 400, true, true, 3},  // 200, 300, 400
+		{"[200, 400)", 200, 400, true, false, 2},  // 200, 300
+		{"(200, 400]", 200, 400, false, true, 2},  // 300, 400
+		{"[200, 400]", 200, 400, true, true, 3},   // 200, 300, 400
 		{"(200, 400)", 200, 400, false, false, 1}, // 300
 	}
 

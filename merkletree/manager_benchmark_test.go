@@ -14,11 +14,11 @@ import (
 
 func TestManagerStressTest(t *testing.T) {
 	tests := []struct {
-		name      string
-		numTrees  int
-		minItems  int
-		maxItems  int
-		updates   int
+		name     string
+		numTrees int
+		minItems int
+		maxItems int
+		updates  int
 	}{
 		{name: "Trees_10", numTrees: 10, minItems: 10_000, maxItems: 100_000, updates: 100_000},
 		{name: "Trees_100", numTrees: 100, minItems: 10_000, maxItems: 100_000, updates: 100_000},
@@ -321,7 +321,7 @@ func TestTopNCache(t *testing.T) {
 		cfgMin.UseTopNMin = true
 		mgrMin := NewUniversalManager(cfgMin)
 		treeMin, _ := CreateTree[*Account](mgrMin, "testMin")
-		
+
 		cfgMax := DefaultConfig()
 		cfgMax.TopN = 5
 		cfgMax.UseTopNMax = true
@@ -377,42 +377,42 @@ func TestTopNCache(t *testing.T) {
 		}
 	})
 
-/** потом сделаю 
-	t.Run("WithDeletes", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.TopN = 3
-		mgr := NewUniversalManager(cfg)
-		tree, _ := CreateTree[*Account](mgr, "test")
+	/** потом сделаю
+		t.Run("WithDeletes", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.TopN = 3
+			mgr := NewUniversalManager(cfg)
+			tree, _ := CreateTree[*Account](mgr, "test")
 
-		for i := uint64(10); i <= 100; i += 10 {
-			tree.Insert(NewAccount(i, StatusUser))
-		}
+			for i := uint64(10); i <= 100; i += 10 {
+				tree.Insert(NewAccount(i, StatusUser))
+			}
 
-		// Удаляем минимум
-		tree.Delete(10)
-		tree.Delete(20)
+			// Удаляем минимум
+			tree.Delete(10)
+			tree.Delete(20)
 
-		minItem, ok := tree.GetMin()
-		if !ok {
-			t.Fatal("GetMin failed")
-		}
-		if minItem.UID != 30 {
-			t.Errorf("После удаления Min должен быть 30, получен %d", minItem.UID)
-		}
+			minItem, ok := tree.GetMin()
+			if !ok {
+				t.Fatal("GetMin failed")
+			}
+			if minItem.UID != 30 {
+				t.Errorf("После удаления Min должен быть 30, получен %d", minItem.UID)
+			}
 
-		// Удаляем максимум
-		tree.Delete(100)
-		tree.Delete(90)
+			// Удаляем максимум
+			tree.Delete(100)
+			tree.Delete(90)
 
-		maxItem, ok := tree.GetMax()
-		if !ok {
-			t.Fatal("GetMax failed")
-		}
-		if maxItem.UID != 80 {
-			t.Errorf("После удаления Max должен быть 80, получен %d", maxItem.UID)
-		}
-	})
-**/
+			maxItem, ok := tree.GetMax()
+			if !ok {
+				t.Fatal("GetMax failed")
+			}
+			if maxItem.UID != 80 {
+				t.Errorf("После удаления Max должен быть 80, получен %d", maxItem.UID)
+			}
+		})
+	**/
 	t.Run("Disabled", func(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.TopN = 0
