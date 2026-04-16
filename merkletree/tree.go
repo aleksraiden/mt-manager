@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	//"fmt"
-
 	"github.com/zeebo/blake3"
 )
 
