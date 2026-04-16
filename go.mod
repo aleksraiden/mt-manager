@@ -1,6 +1,4 @@
-module mt-manager
-
-//github.com/aleksraiden/
+module github.com/aleksraiden/mt-manager
 
 go 1.26.2
 
