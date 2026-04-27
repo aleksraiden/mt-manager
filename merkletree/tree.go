@@ -236,6 +236,26 @@ func (t *Tree[T]) markPathDirty(id uint64) bool {
 	return false
 }
 
+// Пометить как изменённый (upsert)
+func (t *Tree[T]) markDirtyUpsert(item T) {
+    item.Clear()
+	key := item.Key()
+    t.dirtyMu.Lock()
+    t.dirtyKeys[key] = struct{}{}
+    delete(t.deletedKeys, key)
+    t.dirtyMu.Unlock()
+}
+
+// Пометить как удалённый
+func (t *Tree[T]) markDirtyDelete(item T) {
+    item.Clear()
+	key := item.Key()
+    t.dirtyMu.Lock()
+    t.deletedKeys[key] = struct{}{}
+    delete(t.dirtyKeys, key)
+    t.dirtyMu.Unlock()
+}
+
 // MarkDirty вручную помечает элементы как изменённые,
 // если они были обновлены напрямую через указатель.
 func (t *Tree[T]) MarkDirty(ids ...uint64) {
@@ -259,11 +279,7 @@ func (t *Tree[T]) MarkDirty(ids ...uint64) {
 		changed = true
 
 		if trackDirty {
-			key := item.Key()
-			t.dirtyMu.Lock()
-			t.dirtyKeys[key] = struct{}{}
-			delete(t.deletedKeys, key)
-			t.dirtyMu.Unlock()
+			t.markDirtyUpsert(item)
 		}
 	}
 
@@ -272,7 +288,17 @@ func (t *Tree[T]) MarkDirty(ids ...uint64) {
 	}
 }
 
-// DEPRECATED  findLeaf — поиск листа по ID
+// isNodeDirty возвращает true, если листовой узел для данного id помечен грязным.
+// Используется в тестах для проверки инвариантов.
+func (t *Tree[T]) isNodeDirty(id uint64) bool {
+    node := t.findLeaf(t.root, id, 0)
+    if node == nil {
+        return false
+    }
+    return node.dirty.Load()
+}
+
+// findLeaf — поиск листа по ID
 func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
 	if node == nil {
 		return nil
@@ -334,11 +360,7 @@ func (t *Tree[T]) Insert(item T) error {
 	t.keyIndex.Store(item.Key(), item.ID())
 
 	if t.trackDirty.Load() {
-		t.dirtyMu.Lock()
-		k := item.Key()
-		t.dirtyKeys[k] = struct{}{}
-		delete(t.deletedKeys, k) // если был удалён — отменяем
-		t.dirtyMu.Unlock()
+		t.markDirtyUpsert(item)
 	}
 
 	t.insertCount.Add(1)
@@ -399,11 +421,7 @@ func (t *Tree[T]) insertBatchSimple(items []T) []error {
 		t.keyIndex.Store(item.Key(), item.ID())
 
 		if t.trackDirty.Load() {
-			t.dirtyMu.Lock()
-			k := item.Key()
-			t.dirtyKeys[k] = struct{}{}
-			delete(t.deletedKeys, k) // если был удалён — отменяем
-			t.dirtyMu.Unlock()
+			t.markDirtyUpsert(item)
 		}
 
 		successCount++
@@ -446,11 +464,7 @@ func (t *Tree[T]) insertBatchSequential(items []T) []error {
 		t.keyIndex.Store(item.Key(), item.ID())
 
 		if t.trackDirty.Load() {
-			t.dirtyMu.Lock()
-			k := item.Key()
-			t.dirtyKeys[k] = struct{}{}
-			delete(t.deletedKeys, k) // если был удалён — отменяем
-			t.dirtyMu.Unlock()
+			t.markDirtyUpsert(item)
 		}
 
 		if insertedNew {
@@ -596,11 +610,7 @@ func (t *Tree[T]) insertBatchParallel(items []T) []error {
 					t.keyIndex.Store(item.Key(), item.ID())
 
 					if t.trackDirty.Load() {
-						t.dirtyMu.Lock()
-						k := item.Key()
-						t.dirtyKeys[k] = struct{}{}
-						delete(t.deletedKeys, k) // если был удалён — отменяем
-						t.dirtyMu.Unlock()
+						t.markDirtyUpsert(item)
 					}
 
 					local++
@@ -739,11 +749,7 @@ func (t *Tree[T]) insertBatchMegaParallel(items []T) []error {
 					// Обновляем key index
 					t.keyIndex.Store(item.Key(), item.ID())
 					if t.trackDirty.Load() {
-						t.dirtyMu.Lock()
-						k := item.Key()
-						t.dirtyKeys[k] = struct{}{}
-						delete(t.deletedKeys, k) // если был удалён — отменяем
-						t.dirtyMu.Unlock()
+						t.markDirtyUpsert(item)
 					}
 					local++
 				}
@@ -1409,11 +1415,7 @@ func (t *Tree[T]) Delete(id uint64) bool {
 	t.keyIndex.Delete(item.Key())
 
 	if t.trackDirty.Load() {
-		key := item.Key()
-		t.dirtyMu.Lock()
-		t.deletedKeys[key] = struct{}{}
-		delete(t.dirtyKeys, key)
-		t.dirtyMu.Unlock()
+		t.markDirtyDelete(item)
 	}
 
 	return true
@@ -1460,11 +1462,7 @@ func (t *Tree[T]) DeleteBatch(ids []uint64) int {
 		t.keyIndex.Delete(item.Key())
 
 		if t.trackDirty.Load() {
-			key := item.Key()
-			t.dirtyMu.Lock()
-			t.deletedKeys[key] = struct{}{}
-			delete(t.dirtyKeys, key)
-			t.dirtyMu.Unlock()
+			t.markDirtyDelete(item)
 		}
 
 		deleted++

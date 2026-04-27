@@ -36,6 +36,7 @@ type Order struct {
 	Type      OrderType // Limit/Market/...
 	Timestamp int64     // Unix timestamp
 	key       [8]byte   // Кешированный ключ
+	_data		[]byte
 }
 
 // ID реализует интерфейс Hashable
@@ -46,6 +47,10 @@ func (o *Order) ID() uint64 {
 // Key реализует интерфейс Hashable
 func (o *Order) Key() [8]byte {
 	return o.key
+}
+
+func (o *Order) Clear() {
+	o._data = o._data[:0]
 }
 
 // Hash реализует интерфейс Hashable
@@ -76,6 +81,7 @@ func NewOrder(orderID, userID uint64, symbol uint32, price, quantity uint64, sid
 		Side:      side,
 		Type:      typ,
 		Timestamp: 0, // можно time.Now().Unix()
+		_data:	make([]byte, 0, 64),
 	}
 	binary.BigEndian.PutUint64(order.key[:], orderID)
 	return order

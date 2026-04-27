@@ -27,6 +27,7 @@ type Account struct {
 	key       [8]byte
 	EmailHash uint64
 	Status    AccountStatus
+	_data		[]byte
 }
 
 func (a *Account) ID() uint64 {
@@ -35,6 +36,10 @@ func (a *Account) ID() uint64 {
 
 func (a *Account) Key() [8]byte {
 	return a.key
+}
+
+func (a *Account) Clear() {
+	a._data = a._data[:0]
 }
 
 func (a *Account) Hash() [32]byte {
@@ -80,6 +85,7 @@ func NewAccount(uid uint64, status AccountStatus) *Account {
 		UID:       uid,
 		Status:    status,
 		EmailHash: uid ^ 0xCAFEBABE,
+		_data:    make([]byte, 0, 64),
 	}
 	binary.BigEndian.PutUint64(acc.key[:], uid)
 	rand.Read(acc.PublicKey[:])
@@ -91,6 +97,7 @@ func NewAccountDeterministic(uid uint64, status AccountStatus) *Account {
 		UID:       uid,
 		Status:    status,
 		EmailHash: uid ^ 0xCAFEBABE,
+		_data:    make([]byte, 0, 64),
 	}
 	binary.BigEndian.PutUint64(acc.key[:], uid)
 	// Детерминированный PublicKey для тестов
@@ -107,6 +114,7 @@ type Balance struct {
 	Available uint64
 	Locked    uint64
 	key       [8]byte
+	_data		[]byte
 }
 
 func (b *Balance) ID() uint64 {
@@ -115,6 +123,10 @@ func (b *Balance) ID() uint64 {
 
 func (b *Balance) Key() [8]byte {
 	return b.key
+}
+
+func (b *Balance) Clear() {
+	b._data = b._data[:0]
 }
 
 func (b *Balance) Hash() [32]byte {
@@ -137,6 +149,7 @@ func NewBalance(userID uint64, assetID uint32, available, locked uint64) *Balanc
 		AssetID:   assetID,
 		Available: available,
 		Locked:    locked,
+		_data:    make([]byte, 0, 64),
 	}
 	id := (userID << 32) | uint64(assetID)
 	binary.BigEndian.PutUint64(balance.key[:], id)

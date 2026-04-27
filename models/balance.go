@@ -13,6 +13,7 @@ type Balance struct {
 	Available uint64 // Доступный баланс (в микро-единицах)
 	Locked    uint64 // Заблокированный баланс (в ордерах)
 	key       [8]byte
+	_data		[]byte
 }
 
 // ID реализует интерфейс Hashable
@@ -24,6 +25,10 @@ func (b *Balance) ID() uint64 {
 // Key реализует интерфейс Hashable
 func (b *Balance) Key() [8]byte {
 	return b.key
+}
+
+func (b *Balance) Clear() {
+	b._data = b._data[:0]
 }
 
 // Hash реализует интерфейс Hashable
@@ -46,6 +51,7 @@ func NewBalance(userID uint64, assetID uint32, available, locked uint64) *Balanc
 		AssetID:   assetID,
 		Available: available,
 		Locked:    locked,
+		_data: make([]byte, 0, 64),
 	}
 	// Ключ = комбинация UserID и AssetID
 	id := (userID << 32) | uint64(assetID)

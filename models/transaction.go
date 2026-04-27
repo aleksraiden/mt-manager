@@ -25,6 +25,7 @@ type Transaction struct {
 	Type      TxType // Тип транзакции
 	Timestamp int64  // Unix timestamp
 	key       [8]byte
+	_data		[]byte
 }
 
 // ID реализует интерфейс Hashable
@@ -35,6 +36,10 @@ func (t *Transaction) ID() uint64 {
 // Key реализует интерфейс Hashable
 func (t *Transaction) Key() [8]byte {
 	return t.key
+}
+
+func (t *Transaction) Clear() {
+	t._data = t._data[:0]
 }
 
 // Hash реализует интерфейс Hashable
@@ -60,6 +65,7 @@ func NewTransaction(txID, userID uint64, assetID uint32, amount uint64, typ TxTy
 		Amount:    amount,
 		Type:      typ,
 		Timestamp: timestamp,
+		_data: 		make([]byte, 0, 64),
 	}
 	binary.BigEndian.PutUint64(tx.key[:], txID)
 	return tx
