@@ -1,7 +1,6 @@
 package merkletree
 
 import (
-	"fmt" //debug
 	"cmp"
 	"runtime"
 	"slices"
@@ -266,7 +265,7 @@ func (t *Tree[T]) MarkDirty(ids ...uint64) {
 
 	trackDirty := t.trackDirty.Load()
 	changed := false
-fmt.Printf("[DEBUG] call MarkDirty for %d ids, trackDirty: %t \n", len(ids), trackDirty)
+
 	if !trackDirty {
 		return 
 	}
@@ -284,7 +283,6 @@ fmt.Printf("[DEBUG] call MarkDirty for %d ids, trackDirty: %t \n", len(ids), tra
 		changed = true
 
 		if trackDirty {
-fmt.Printf("[DEBUG] call markDirtyUpsert for itemId %d \n", item.ID())			
 			t.markDirtyUpsert(item)
 		}
 	}
@@ -320,8 +318,6 @@ func (t *Tree[T]) findLeaf(node *Node[T], id uint64, depth int) *Node[T] {
 		}
 		return nil
 	}
-
-	//fmt.Printf("[DEBUG] findLeaf(id) => false, id: %d, encodedId %x, normalizedId: %x\n", id, t.encodeID(id), t.normalizeKey(t.encodeID(id)))
 
 	nkey := t.normalizeKey(t.encodeID(id))
 	if depth >= len(nkey) {
