@@ -1,6 +1,7 @@
 package merkletree
 
 import (
+	"fmt" //debug
 	"cmp"
 	"runtime"
 	"slices"
@@ -265,7 +266,11 @@ func (t *Tree[T]) MarkDirty(ids ...uint64) {
 
 	trackDirty := t.trackDirty.Load()
 	changed := false
-
+fmt.Printf("[DEBUG] call MarkDirty for %d ids, trackDirty: %t \n", len(ids), trackDirty)
+	if !trackDirty {
+		return 
+	}
+	
 	for _, id := range ids {
 		item, exists := t.items.Load(id)
 		if !exists {
@@ -279,6 +284,7 @@ func (t *Tree[T]) MarkDirty(ids ...uint64) {
 		changed = true
 
 		if trackDirty {
+fmt.Printf("[DEBUG] call markDirtyUpsert for itemId %d \n", item.ID())			
 			t.markDirtyUpsert(item)
 		}
 	}
